@@ -1,0 +1,9 @@
+# Rust build artifacts
+/target
+
+# Vendored reference trees (read-only dev aids; large; must not be committed)
+/reference
+
+# Local env files (may contain private keys)
+.env
+.env.local

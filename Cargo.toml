@@ -1,0 +1,54 @@
+[package]
+name = "outlay"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+license = "MIT"
+publish = false
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Serialization (tool params + NIP-01 chunk framing)
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+schemars = "1"  # rmcp tool param JsonSchema derives (reuses the artifact rmcp already compiles)
+async-trait = "0.1"  # MessageSink trait
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# ContextVM server transport + rmcp handler.
+# `contextvm-sdk` default features include `rmcp`; it also pulls `nostr-sdk`
+# transitively, so the explicit `nostr-sdk` dep below reuses an existing build
+# artifact rather than adding a new one (same trick cordn-server pulls).
+contextvm-sdk = "0.2.1"
+rmcp = { version = "1.8", features = ["server", "macros"] }
+nostr-sdk = "0.44"
+
+[features]
+default = []
+# Enables `contextvm-sdk`'s `MockRelayPool` for network-free integration tests.
+test-utils = ["contextvm-sdk/test-utils"]
+
+[dev-dependencies]
+futures = "0.3"
+
+# Smoke tests against a real upstream relay. Gated behind `test-utils` (which
+# pulls in `MockRelayPool` for the client<->server CVM hop) and `#[ignore]` on
+# each test (they hit the network). Run with:
+#   cargo test --features test-utils --test smoke -- --ignored --nocapture
+[[test]]
+name = "smoke"
+required-features = ["test-utils"]
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
