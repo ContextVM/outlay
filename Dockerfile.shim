@@ -1,0 +1,21 @@
+# Packages a *prebuilt* outlay-shim binary. CI builds natively per-arch
+# (amd64/arm64) and COPYs the matching binary in — no Rust compile in Docker.
+# The shim bridges vanilla NIP-01 clients to CVM-exposed outlay servers; it is
+# stateless (no database, no volume). See design/shim.md.
+
+FROM debian:stable-slim
+
+# ca-certificates: the shim connects out to CVM relays (wss://).
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY outlay-shim /usr/local/bin/outlay-shim
+
+# Bind all interfaces so the WS port is reachable from outside the container.
+# (Loopback is the bare-binary default; containers need 0.0.0.0.) Connect to
+# outlay servers via the CVM relays — OUTLAY_SHIM_RELAY_URLS.
+ENV OUTLAY_SHIM_LISTEN_ADDR=0.0.0.0:8088
+EXPOSE 8088
+
+ENTRYPOINT ["outlay-shim"]

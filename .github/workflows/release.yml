@@ -1,0 +1,130 @@
+name: release
+
+# Triggered by `make patch|minor|major` (which pushes a `v*` tag), or manually
+# via the Actions tab (`workflow_dispatch` runs the build jobs only; the GitHub
+# Release + Docker manifests are gated to real tags).
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write # create the GitHub Release + upload binary assets
+  packages: write # push to ghcr.io
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Native per-arch release builds. Using GitHub's free arm64 runners avoids
+  # cross-compilation entirely (no QEMU, no C-toolchain juggling for bundled SQLite).
+  binaries:
+    name: binaries / ${{ matrix.arch }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: build (release)
+        run: cargo build --release -p outlay -p outlay-shim
+
+      - name: package
+        run: |
+          mkdir -p dist
+          for bin in outlay outlay-shim; do
+            strip -s target/release/$bin || true
+            tar -C target/release -czf dist/${bin}-${{ matrix.arch }}.tar.gz $bin
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: bins-${{ matrix.arch }}
+          path: dist/*.tar.gz
+
+  # GitHub Release: binary tarballs for both crates/arches + a SHA256 checksum
+  # file so downloads are verifiable. Tag-only.
+  release:
+    needs: binaries
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: stage release assets + checksums
+        run: |
+          find dist -name '*.tar.gz' -exec mv {} . \;
+          sha256sum *.tar.gz > checksums.txt
+          cat checksums.txt
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
+          files: |
+            *.tar.gz
+            checksums.txt
+
+  # Per-arch Docker images for both crates: package the prebuilt binary (no Rust
+  # compile inside Docker → fast; the build stays on the native runners above).
+  docker:
+    name: image / ${{ matrix.crate }} / ${{ matrix.arch }}
+    needs: binaries
+    if: startsWith(github.ref, 'refs/tags/')
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {crate: outlay,      arch: amd64, runner: ubuntu-24.04,     dockerfile: Dockerfile}
+          - {crate: outlay-shim, arch: amd64, runner: ubuntu-24.04,     dockerfile: Dockerfile.shim}
+          - {crate: outlay,      arch: arm64, runner: ubuntu-24.04-arm, dockerfile: Dockerfile}
+          - {crate: outlay-shim, arch: arm64, runner: ubuntu-24.04-arm, dockerfile: Dockerfile.shim}
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: bins-${{ matrix.arch }}
+          path: dist
+      - name: unpack ${{ matrix.crate }} binary into build context
+        run: tar -xzf dist/${{ matrix.crate }}-${{ matrix.arch }}.tar.gz
+      - name: docker login (ghcr.io)
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+      - name: build & push (per-arch)
+        run: |
+          REG=$(echo "ghcr.io/${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          VER=${GITHUB_REF_NAME#v}
+          docker build -f ${{ matrix.dockerfile }} -t "$REG/${{ matrix.crate }}:$VER-${{ matrix.arch }}" .
+          docker push "$REG/${{ matrix.crate }}:$VER-${{ matrix.arch }}"
+
+  # Merge the per-arch images into one multi-arch tag (:<version> + :latest) per
+  # crate. `docker pull ghcr.io/<owner>/outlay:latest` resolves to the host arch.
+  docker-manifest:
+    name: manifest / ${{ matrix.crate }}
+    needs: docker
+    if: startsWith(github.ref, 'refs/tags/')
+    strategy:
+      matrix:
+        crate: [outlay, outlay-shim]
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - name: docker login (ghcr.io)
+        run: echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+      - name: merge multi-arch manifest
+        run: |
+          REG=$(echo "ghcr.io/${{ github.repository_owner }}" | tr '[:upper:]' '[:lower:]')
+          VER=${GITHUB_REF_NAME#v}
+          docker buildx imagetools create \
+            -t "$REG/${{ matrix.crate }}:$VER" \
+            -t "$REG/${{ matrix.crate }}:latest" \
+            "$REG/${{ matrix.crate }}:$VER-amd64" \
+            "$REG/${{ matrix.crate }}:$VER-arm64"

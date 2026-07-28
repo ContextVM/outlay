@@ -221,3 +221,38 @@ async fn publish_event_accepted_by_upstream() {
 
     cleanup(fx).await;
 }
+
+/// `relay_info` fetches the upstream's NIP-11 doc over HTTP and overlays outlay's
+/// identity: top-level `software`/`version` become outlay's, the upstream's land
+/// under `upstream`, and a `proxy: true` marker is set. Unknown upstream fields
+/// are preserved (verbatim).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+#[ignore]
+async fn relay_info_overlays_outlay_identity_on_upstream_nip11() {
+    let fx = fixture().await;
+
+    let result = fx
+        .client
+        .peer()
+        .call_tool(CallToolRequestParams::new("relay_info"))
+        .await
+        .expect("relay_info call");
+
+    let sc = result
+        .structured_content
+        .expect("relay_info returns structured content");
+    println!("relay_info: {sc}");
+    assert_eq!(
+        sc["software"], "outlay",
+        "outlay stamps its software on top"
+    );
+    assert_eq!(sc["proxy"], true, "proxy marker is set");
+    assert_eq!(sc["version"], env!("CARGO_PKG_VERSION"));
+    // primal serves a real NIP-11 doc with a `software` field → preserved.
+    assert!(
+        sc["upstream"]["software"].is_string(),
+        "upstream software preserved under `upstream` (got: {sc})"
+    );
+
+    cleanup(fx).await;
+}

@@ -4,6 +4,10 @@
 # Vendored reference trees (read-only dev aids; large; must not be committed)
 /reference
 
+# Local release binaries staged into the Docker build context (don't commit)
+/outlay
+/outlay-shim
+
 # Local env files (may contain private keys)
 .env
 .env.local

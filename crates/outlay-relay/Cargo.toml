@@ -1,0 +1,28 @@
+[package]
+name = "outlay-relay"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+license = "MIT"
+publish = false
+
+[dependencies]
+# `nostr-sdk` 0.45-alpha ships `LocalRelay` — a real NIP-01 WebSocket server —
+# behind its `local-relay` feature. This is intentionally AHEAD of `outlay`'s
+# 0.44 (pinned transitively by `contextvm-sdk`); the two versions coexist in the
+# final binary because the crate boundary is a plain URL string, not nostr
+# types. The default `outlay` build pulls neither this crate nor 0.45-alpha —
+# the alpha is fully opt-in via outlay's `bundled-relay` feature.
+# See src/lib.rs doc + design/design.md §9 (bundled relay).
+nostr-sdk = { version = "0.45.0-alpha.6", features = ["local-relay"] }
+# `nostr-sqlite`'s default `bundled` feature statically links SQLite — no system
+# libsqlite3 required (keeps the self-contained binary + future cross-compile honest).
+nostr-sqlite = "0.45.0-alpha.6"
+# In-process backend option (volatile; for tests / ephemeral runs).
+nostr-memory = "0.45.0-alpha.6"
+# Trait object (`Arc<dyn NostrDatabase>`) for the DB held across port-scan retries.
+# Already compiled transitively; this only names it.
+nostr-database = "0.45.0-alpha.6"
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+tracing = "0.1"

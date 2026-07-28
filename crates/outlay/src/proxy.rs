@@ -13,8 +13,8 @@
 
 use std::time::Duration;
 
-use async_trait::async_trait;
 use contextvm_sdk::relay::RelayPool;
+use contextvm_sdk::transport::open_stream::OpenStreamWriter;
 use nostr_sdk::prelude::*;
 use serde_json::json;
 use tokio::sync::broadcast;
@@ -27,6 +27,12 @@ const SINK_ACTIVE_POLL: Duration = Duration::from_secs(1);
 /// How long `publish_event` waits for the upstream `OK` before giving up
 /// (design §8.6).
 const PUBLISH_TIMEOUT: Duration = Duration::from_secs(15);
+
+/// How long `relay_info` waits for the upstream NIP-11 document.
+const RELAY_INFO_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// outlay's own version, overlaid onto the upstream's NIP-11 document.
+const OUTLAY_VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProxyError {
@@ -42,18 +48,29 @@ pub enum ProxyError {
     Publish(String),
     #[error("upstream did not acknowledge the event within timeout")]
     PublishTimeout,
+    #[error("relay_info: {0}")]
+    RelayInfo(String),
 }
 
-/// A streaming sink the proxy writes NIP-01 relay→client chunks to. The rmcp
-/// layer adapts [`OpenStreamWriter`] to this; tests use a collecting sink.
-/// Ported from cordn-server/src/adapter.rs.
-#[async_trait]
-pub trait MessageSink: Send + Sync {
-    async fn start(&self) -> bool;
+/// The CEP-41 sink the proxy writes NIP-01 relay→client chunks to, with the
+/// bool-returning surface the subscribe loop wants. The only sink type — the
+/// trait it replaced had one impl and no mock-sink test was ever written.
+pub struct StreamWriter(pub OpenStreamWriter);
+
+impl StreamWriter {
+    pub async fn start(&self) -> bool {
+        self.0.start().await.is_ok()
+    }
     /// Write one chunk. Returns `false` if the sink is dead and the loop should stop.
-    async fn write(&self, msg: String) -> bool;
-    fn is_active(&self) -> bool;
-    async fn close(&self);
+    pub async fn write(&self, msg: String) -> bool {
+        self.0.write(msg).await.is_ok() && self.0.is_active()
+    }
+    pub fn is_active(&self) -> bool {
+        self.0.is_active()
+    }
+    pub async fn close(&self) {
+        let _ = self.0.close().await;
+    }
 }
 
 /// Outcome of mapping one upstream notification for a subscription stream.
@@ -117,6 +134,58 @@ fn chunk(parts: serde_json::Value) -> String {
     serde_json::to_string(&parts).unwrap_or_else(|_| "[]".into())
 }
 
+/// HTTP origin (scheme + authority, no path) for the upstream's NIP-11 doc:
+/// `wss://host[:port][/path]` → `https://host[:port]`, `ws://…` → `http://…`.
+/// NIP-11 is served at the HTTP root of the relay's websocket endpoint.
+fn nip11_origin(upstream: &str) -> Option<String> {
+    let (scheme, rest) = if let Some(h) = upstream.strip_prefix("wss://") {
+        ("https://", h)
+    } else if let Some(h) = upstream.strip_prefix("ws://") {
+        ("http://", h)
+    } else {
+        return None;
+    };
+    let authority = rest.split('/').next()?;
+    Some(format!("{scheme}{authority}"))
+}
+
+/// Overlay outlay's identity onto a verbatim upstream NIP-11 document. Operates
+/// on the raw JSON value so unknown upstream fields are preserved (the typed
+/// `nostr::RelayInformationDocument` drops them). The upstream's
+/// `software`/`version` are moved under an `upstream` key; outlay's identity
+/// is stamped on top. Design §5.
+// ponytail: v1 forwards upstream `supported_nips`/`limitation` verbatim — but
+// through outlay a client effectively has only NIP-01. Revisit the honest
+// values when a real client is misled (design §5 known mismatch).
+fn overlay_proxy_info(mut doc: serde_json::Value) -> serde_json::Value {
+    let obj = doc.as_object_mut().expect("nip11 doc is an object");
+    let mut upstream = serde_json::Map::new();
+    if let Some(s) = obj.remove("software") {
+        upstream.insert("software".into(), s);
+    }
+    if let Some(v) = obj.remove("version") {
+        upstream.insert("version".into(), v);
+    }
+    if !upstream.is_empty() {
+        obj.insert("upstream".into(), serde_json::Value::Object(upstream));
+    }
+    obj.insert("software".into(), json!("outlay"));
+    obj.insert("version".into(), json!(OUTLAY_VERSION));
+    obj.insert("proxy".into(), json!(true));
+    doc
+}
+
+/// Minimum NIP-11 document returned when the upstream serves none (or returns
+/// non-JSON) — notably the future bundled in-process relay on `ws://127.0.0.1`.
+fn synthesized_proxy_info() -> serde_json::Value {
+    json!({
+        "software": "outlay",
+        "version": OUTLAY_VERSION,
+        "proxy": true,
+        "supported_nips": [1],
+    })
+}
+
 /// The upstream `OK` outcome mirrored back by `publish_event`.
 #[derive(Debug, serde::Serialize)]
 pub struct PublishOutcome {
@@ -127,8 +196,9 @@ pub struct PublishOutcome {
 
 pub struct Proxy {
     pool: RelayPool,
-    #[allow(dead_code)] // used by `relay_info` (next step)
     upstream_url: String,
+    /// Reused across `relay_info` calls (connection pool, TLS session).
+    http: reqwest::Client,
 }
 
 impl Proxy {
@@ -142,7 +212,15 @@ impl Proxy {
         pool.connect(std::slice::from_ref(&upstream_url))
             .await
             .map_err(|e| ProxyError::Connect(e.to_string()))?;
-        Ok(Self { pool, upstream_url })
+        let http = reqwest::Client::builder()
+            .timeout(RELAY_INFO_TIMEOUT)
+            .build()
+            .map_err(|e| ProxyError::Init(format!("http client: {e}")))?;
+        Ok(Self {
+            pool,
+            upstream_url,
+            http,
+        })
     }
 
     fn client(&self) -> &std::sync::Arc<Client> {
@@ -156,7 +234,7 @@ impl Proxy {
         &self,
         client_sub: String,
         filters: Vec<Filter>,
-        sink: &dyn MessageSink,
+        sink: &StreamWriter,
     ) -> Result<(), ProxyError> {
         if filters.is_empty() {
             return Err(ProxyError::EmptyFilters);
@@ -254,6 +332,37 @@ impl Proxy {
             event_id: id,
             message,
         })
+    }
+
+    /// Fetch the upstream's NIP-11 information document and overlay outlay's
+    /// identity (design §5). Falls back to a synthesized minimum when the
+    /// upstream serves no usable NIP-11 doc.
+    // ponytail: no cache — NIP-11 is mostly static and clients rarely hammer
+    // it; add a TTL when profiling shows otherwise.
+    pub async fn relay_info(&self) -> Result<serde_json::Value, ProxyError> {
+        let origin = nip11_origin(&self.upstream_url).ok_or_else(|| {
+            ProxyError::RelayInfo(format!(
+                "upstream URL must be ws:// or wss://, got: {}",
+                self.upstream_url
+            ))
+        })?;
+        let resp = self
+            .http
+            .get(&origin)
+            .header("Accept", "application/nostr+json")
+            .send()
+            .await
+            .map_err(|e| ProxyError::RelayInfo(e.to_string()))?;
+        // Robust: any 2xx with a JSON object body is the doc. Some relays
+        // serve NIP-11 regardless of the Accept header.
+        if resp.status().is_success() {
+            if let Ok(doc) = resp.json::<serde_json::Value>().await {
+                if doc.is_object() {
+                    return Ok(overlay_proxy_info(doc));
+                }
+            }
+        }
+        Ok(synthesized_proxy_info())
     }
 }
 
@@ -378,5 +487,52 @@ mod tests {
         // and vice versa
         let n = notif_event("mine", event("mine"));
         assert!(map_notification(&n, &theirs, "c").is_none());
+    }
+
+    #[test]
+    fn nip11_origin_converts_scheme_and_strips_path() {
+        assert_eq!(
+            nip11_origin("wss://relay.primal.net").as_deref(),
+            Some("https://relay.primal.net")
+        );
+        assert_eq!(
+            nip11_origin("ws://localhost:8080").as_deref(),
+            Some("http://localhost:8080")
+        );
+        assert_eq!(
+            nip11_origin("wss://relay.example.com/some/path?x=1").as_deref(),
+            Some("https://relay.example.com")
+        );
+        assert!(nip11_origin("ftp://host").is_none());
+    }
+
+    #[test]
+    fn overlay_stamps_outlay_identity_and_preserves_upstream_fields() {
+        let doc = json!({
+            "name": "Primal",
+            "software": "primal-server",
+            "version": "1.2.3",
+            "supported_nips": [1, 11, 42],
+            "custom_field": "preserved",
+        });
+        let out = overlay_proxy_info(doc);
+        assert_eq!(out["software"], "outlay");
+        assert_eq!(out["version"], OUTLAY_VERSION);
+        assert_eq!(out["proxy"], true);
+        // upstream identity preserved under `upstream`.
+        assert_eq!(out["upstream"]["software"], "primal-server");
+        assert_eq!(out["upstream"]["version"], "1.2.3");
+        // other fields untouched (verbatim proxy).
+        assert_eq!(out["name"], "Primal");
+        assert_eq!(out["supported_nips"][2], 42);
+        assert_eq!(out["custom_field"], "preserved");
+    }
+
+    #[test]
+    fn overlay_without_upstream_software_omits_upstream_key() {
+        let doc = json!({ "name": "bare relay" });
+        let out = overlay_proxy_info(doc);
+        assert_eq!(out["software"], "outlay");
+        assert!(out.get("upstream").is_none());
     }
 }

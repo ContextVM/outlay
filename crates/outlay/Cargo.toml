@@ -1,0 +1,66 @@
+[package]
+name = "outlay"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+license = "MIT"
+publish = false
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "2"
+
+# Serialization (tool params + NIP-01 chunk framing)
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# `.env` loading (first-write-wins; replaces a hand-rolled parser).
+dotenvy = "0.15"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# ContextVM server transport + rmcp handler.
+# `contextvm-sdk` default features include `rmcp`; it also pulls `nostr-sdk`
+# transitively, so the explicit `nostr-sdk` dep below reuses an existing build
+# artifact rather than adding a new one (same trick cordn-server pulls).
+contextvm-sdk = "0.2.1"
+rmcp = { version = "1.8", features = ["server", "macros"] }
+nostr-sdk = "0.44"
+# Bundled in-process relay (Shape A). On by default (see `default` features);
+# `optional = true` keeps it out of `--no-default-features` (proxy-only) builds.
+outlay-relay = { path = "../outlay-relay", optional = true }
+# HTTP client for the NIP-11 (`relay_info`) tool. `default-features = false`
+# keeps us on the rustls TLS stack already in the tree (no native-tls/openssl).
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+[features]
+# The bundled in-process relay is on by default: outlay runs self-contained
+# with zero config. Build with `--no-default-features` for the proxy-only
+# binary (lighter; requires OUTLAY_PROXY_RELAY_URL). See design §10.9.
+default = ["bundled-relay"]
+# Enables `contextvm-sdk`'s `MockRelayPool` for network-free integration tests.
+test-utils = ["contextvm-sdk/test-utils"]
+bundled-relay = ["dep:outlay-relay"]
+
+[dev-dependencies]
+futures = "0.3"
+
+# Smoke tests against a real upstream relay. Gated behind `test-utils` (which
+# pulls in `MockRelayPool` for the client<->server CVM hop) and `#[ignore]` on
+# each test (they hit the network). Run with:
+#   cargo test --features test-utils --test smoke -- --ignored --nocapture
+[[test]]
+name = "smoke"
+required-features = ["test-utils"]
+
+# Network-free E2E for the `bundled-relay` feature: the in-process `LocalRelay`
+# is the upstream (loopback), the CVM hop is mocked. Run with:
+#   cargo test --features "test-utils bundled-relay" --test smoke_bundled -- --nocapture
+[[test]]
+name = "smoke_bundled"
+required-features = ["test-utils", "bundled-relay"]

@@ -1,0 +1,14 @@
+# Keep the Docker build context tiny — only the prebuilt `outlay` binary and the
+# Dockerfile are needed (the binary is COPYd in; no source is compiled in Docker).
+target/
+reference/
+.git/
+.github/
+design/
+crates/
+tests/
+*.md
+.env*
+.env.local
+Makefile
+Cargo.lock

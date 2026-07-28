@@ -1,20 +1,20 @@
 # outlay
 
-A Nostr relay exposed as a **ContextVM (CVM)** server. `outlay` is a transparent
-proxy that binds CVM tool calls to NIP-01 relay traffic: a CVM client calls
-`subscribe`/`publish_event`, and outlay translates each call into the
-corresponding NIP-01 exchange with an upstream relay, streaming relay events
-back over [CEP-41 open-stream](https://github.com/ContextVM/CEPs).
+A Nostr relay exposed as a **ContextVM (CVM)** server. `outlay` binds CVM tool
+calls to NIP-01 relay traffic: a CVM client calls `subscribe` /
+`publish_event` / `relay_info`, and outlay translates each call into the
+corresponding NIP-01 exchange, streaming relay events back over
+[CEP-41 open-stream](https://github.com/ContextVM/CEPs).
 
-Point it at any relay — clearnet (`wss://relay.primal.net`) or localhost
-(`ws://localhost:8080`) — and anything that speaks CVM can read/write that relay
-through it.
+**It just runs.** With no configuration, outlay starts a bundled in-process
+Nostr relay as its upstream — fully self-contained, persistent (SQLite), zero
+external dependencies. Point it at any other relay instead with a single env
+var; anything that speaks CVM can then read/write that relay through it.
 
-> **Status:** v1 — proxy mode, working and tested end-to-end against a live
-> relay. `subscribe` and `publish_event` are implemented; `relay_info` (NIP-11),
-> the companion WS shim for vanilla Nostr clients, and a bundled in-process
-> relay are on the roadmap. See [`design/design.md`](./design/design.md) for the
-> locked design.
+> **Status:** v1 — `outlay` (bundled-relay default + external-upstream proxy
+> mode), `outlay-shim` (vanilla-NIP-01 bridge), and the release pipeline are
+> done and tested. See [`design/design.md`](./design/design.md) for the locked
+> design and [`design/shim.md`](./design/shim.md) for the shim.
 
 ## How it works
 
@@ -36,15 +36,17 @@ The core mapping: **one CEP-41 stream == one NIP-01 subscription.**
 | `["EVENT", e]` (publish)  | `tools/call publish_event{event}` → `{ok, event_id, message}`    |
 
 ```text
-   CVM client ──── CVM tools over Nostr ──── outlay server ──── NIP-01 ws ──── upstream relay
-                   (CEP-41 open-stream)         (proxy + rmcp)                  (any relay)
+   CVM client ──── CVM tools over Nostr ──── outlay server ──── NIP-01 ws ──── upstream
+                   (CEP-41 open-stream)         (proxy + rmcp)                  (bundled relay
+                                                                                or any external relay)
 ```
 
 Two independent relay connections live inside outlay:
 
 - **Upstream pool** — outlay's own `Proxy`, a `nostr-sdk` `Client` connected to
-  the single configured upstream relay. Uses a throwaway ephemeral key:
-  published events are forwarded **verbatim** (client-signed), never re-signed.
+  the upstream. By default that upstream is the bundled in-process relay
+  (loopback). With `OUTLAY_PROXY_RELAY_URL` set, it's that external relay.
+  Published events are forwarded **verbatim** (client-signed), never re-signed.
 - **CVM transport** — the `NostrServerTransport` that CVM clients connect
   through, on the ContextVM relays you configure.
 
@@ -53,15 +55,16 @@ Two independent relay connections live inside outlay:
 Requires Rust stable (MSRV **1.88**).
 
 ```sh
-# Proxy a public relay:
-OUTLAY_PROXY_RELAY_URL=wss://relay.primal.net cargo run
+# Self-contained: zero config → bundled in-process relay (SQLite) as the upstream.
+cargo run
 
-# Or a local one:
+# Or proxy an external relay instead (advanced):
+OUTLAY_PROXY_RELAY_URL=wss://relay.primal.net cargo run
 OUTLAY_PROXY_RELAY_URL=ws://localhost:8080 cargo run
 ```
 
-On startup outlay prints its server pubkey, the CVM relays it listens on, and
-the upstream relay it proxies.
+On startup outlay logs its server pubkey, the CVM relays it listens on, the
+upstream, and `mode=bundled|proxy`.
 
 ## Configuration
 
@@ -70,12 +73,14 @@ process environment.
 
 | Variable                      | Default                    | Description                                            |
 |-------------------------------|----------------------------|--------------------------------------------------------|
-| `OUTLAY_PROXY_RELAY_URL`      | _(required)_               | Upstream relay to proxy (`ws://`/`wss://`).            |
+| `OUTLAY_PROXY_RELAY_URL`      | _(unset → bundled)_        | External upstream to proxy. Unset = run the bundled relay (default). |
 | `OUTLAY_RELAY_URLS`           | `wss://relay.contextvm.org`| Comma-separated CVM relays the server listens on.      |
 | `OUTLAY_SERVER_PRIVATE_KEY`   | _(ephemeral)_              | Hex/nsec server key. Unset → new key each start.       |
 | `OUTLAY_SERVER_NAME`          | `outlay`                   | CVM profile name.                                      |
-| `OUTLAY_SERVER_ABOUT`         | _(none)_                   | CVM profile about.                                     |
 | `OUTLAY_ANNOUNCED`            | `false`                    | Public discovery (kind 11316) on/off.                  |
+| `OUTLAY_BUNDLED_BACKEND`      | `sqlite`                   | Bundled relay backend: `sqlite` (persistent) or `memory` (volatile). |
+| `OUTLAY_BUNDLED_DB_PATH`      | `outlay-relay.db`          | SQLite path (ignored for `memory`).                    |
+| `OUTLAY_BUNDLED_PORT`         | `0`                        | Bundled relay bind port (`0` = scan a free loopback port). |
 
 ## CVM tool surface
 
@@ -84,61 +89,89 @@ process environment.
   aborting the call (= NIP-01 `CLOSE`).
 - **`publish_event(event)`** — synchronous. Forwards a client-signed event
   verbatim; returns `{ ok, event_id, message }` mirroring the upstream `OK`.
+- **`relay_info()`** — synchronous. Fetches the upstream's NIP-11 document
+  over HTTP and overlays outlay's identity (`software`/`version`/`proxy`); the
+  upstream's identity is preserved under `upstream` and all other fields pass
+  through verbatim. Falls back to a synthesized minimum when the upstream
+  serves no NIP-11 (notably the bundled relay).
+
+## outlay-shim — vanilla NIP-01 bridge
+
+`outlay-shim` is a localhost WebSocket endpoint that translates vanilla NIP-01
+(`REQ`/`EVENT`/`CLOSE`) into outlay's CVM tool calls, so ordinary Nostr clients
+(gossip, web wallets, `nak`) can reach CVM-exposed relays without speaking CVM.
+Path-keyed: `ws://localhost:8088/<server-pubkey-or-nprofile>`. Design in
+[`design/shim.md`](./design/shim.md).
+
+```sh
+cargo run -p outlay-shim
+```
 
 ## Testing
 
 ```sh
-# Unit tests — no network, instant (config + the demux pure function):
-cargo test
-
-# Smoke tests — real CVM client (over a mock relay) → outlay → wss://relay.primal.net:
-cargo test --features test-utils --test smoke -- --ignored --nocapture
+cargo test --workspace                                # unit tests (default = bundled)
+cargo test -p outlay --no-default-features            # proxy-only config path
+cargo test -p outlay --features test-utils --test smoke_bundled   # network-free E2E (bundled relay)
+cargo test -features test-utils --test smoke -- --ignored --nocapture  # real network (primal)
+cargo fmt --all && cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-Lint/format:
+## Releases
+
+Releases are driven by the `Makefile` + GitHub Actions (`.github/workflows/`):
 
 ```sh
-cargo fmt --all
-cargo clippy --all-targets -- -D warnings
+make version          # print the current shared version
+make release          # tag the CURRENT version + push (inaugural / re-release)
+make patch            # or minor / major → bump, commit, tag v<ver>, push
+```
+
+A pushed `v*` tag triggers `release.yml`, which builds `outlay` + `outlay-shim`
+natively for **linux/amd64** and **linux/arm64** (free arm64 runners — no
+cross-compile), attaches the tarballs + a SHA256 `checksums.txt` to the GitHub
+Release, and publishes multi-arch Docker images for both crates to GHCR:
+
+```
+ghcr.io/contextvm/outlay          ghcr.io/contextvm/outlay-shim
+```
+
+Run the images directly:
+
+```sh
+docker run --rm -v outlay-data:/data ghcr.io/contextvm/outlay          # zero-config bundled relay
+docker run --rm -p 8088:8088 ghcr.io/contextvm/outlay-shim             # NIP-01 bridge on :8088
 ```
 
 ## Project layout
 
 ```text
 outlay/
-  Cargo.toml        single bin+lib crate (no workspace)
-  src/
-    lib.rs          library root (so tests/ can import outlay)
-    main.rs         thin bin: config → signer → proxy → transport → serve
-    config.rs       env config + .env loader
-    handler.rs      rmcp OutlayServer + the #[tool] glue
-    proxy.rs        upstream RelayPool + forwarding; pure map_notification demux
-  tests/
-    smoke.rs        end-to-end smoke tests (gated on `test-utils`, #[ignore])
-  design/
-    design.md       the locked design
+  Cargo.toml        workspace root (members: crates/*)
+  crates/
+    outlay/         the CVM↔NIP-01 relay proxy server (bin+lib; bundled relay default)
+      src/          config.rs · handler.rs · proxy.rs · main.rs · lib.rs
+      tests/        smoke.rs (network, #[ignore]) · smoke_bundled.rs (network-free)
+    outlay-shim/    vanilla NIP-01 client bridge (bin+lib; design/shim.md)
+      src/          server.rs · conn.rs · translate.rs · nip11.rs · path.rs · transport.rs
+    outlay-relay/   bundled in-process relay on nostr-sdk 0.45-alpha's LocalRelay
+  design/           design.md (server) · shim.md (shim)
   reference/        gitignored, read-only vendored references (cordn-rs, nostr,
                     nostr-rs-relay, rs-sdk, nips) — not required to build
 ```
 
 ## Roadmap
 
-- **`relay_info`** — NIP-11 relay information document (needs an HTTP client).
-- **Companion WS shim** — a localhost WebSocket endpoint that translates NIP-01
-  for vanilla Nostr clients (gossip, web wallets) into these CVM tool calls, so
-  non-CVM clients can reach CVM-exposed relays.
-- **Bundled relay** — embed `nostr-rs-relay` in-process as the default upstream;
-  proxy code unchanged.
-- **Authz** — `allowed_public_keys` (private server by default). Multi-relay
-  fan-in. NIP-42 AUTH brokering.
+- **Authz** — `allowed_public_keys`. Deferred until the shim clarifies the trust
+  model; outlay is an open proxy meanwhile.
+- **Shape B relay** — expose the bundled relay on a configurable bind (not just
+  loopback), which forces the authz decision.
+- Multi-relay fan-in; NIP-42 AUTH brokering; a NIP-11 cache.
 
-## References
-
-`reference/` holds read-only, gitignored copies of the projects this builds on
-and learns from: [`rs-sdk`](https://github.com/ContextVM/rs-sdk) (the CVM Rust
-SDK), [`cordn-rs`](https://github.com/Cordn-msg/cordn-rs) (the streaming-CVM
-pattern outlay mirrors), [`nostr-rs-relay`](https://github.com/rust-nostr/nostr),
-and the [`nostr`](https://github.com/rust-nostr/nostr) library.
+`reference/` holds read-only, gitignored copies of the projects this builds on:
+[`rs-sdk`](https://github.com/ContextVM/rs-sdk) (CVM Rust SDK),
+[`cordn-rs`](https://github.com/Cordn-msg/cordn-rs) (the streaming-CVM pattern
+outlay mirrors), and the [`nostr`](https://github.com/rust-nostr/nostr) library.
 
 ## License
 

@@ -1,0 +1,53 @@
+[package]
+name = "outlay-shim"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.88"
+license = "MIT"
+publish = false
+
+[dependencies]
+# Async runtime + ergonomics.
+tokio = { version = "1", features = ["full"] }
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+# `.env` loading (first-write-wins; replaces a hand-rolled parser).
+dotenvy = "0.15"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+futures = "0.3"
+
+# CVM client transport (`contextvm-sdk` defaults to `rmcp`; it also pulls
+# `nostr-sdk` transitively). We enable rmcp's client role explicitly.
+contextvm-sdk = "0.2.1"
+rmcp = { version = "1.8", features = ["client"] }
+nostr-sdk = "0.44" # NIP-19 path parsing (re-exports `nostr`).
+
+# Local WS+HTTP server: vanilla NIP-01 clients connect here. `axum::extract::ws`
+# is tungstenite underneath, so the frame limits + ping/keepalive model carries
+# over from `nostr-rs-relay`.
+axum = { version = "0.8", features = ["ws"] }
+
+[features]
+default = []
+# Enables `contextvm-sdk`'s `MockRelayPool` for the network-free CVM-hop smoke
+# test. Mirrors `outlay`'s `test-utils`.
+test-utils = ["contextvm-sdk/test-utils"]
+
+[dev-dependencies]
+# The smoke test drives a real outlay server (mock CVM hop, real upstream).
+outlay = { path = "../outlay" }
+# A vanilla NIP-01 WS client driving the shim over a real (loopback) socket.
+tokio-tungstenite = "0.26"
+# HTTP client for the NIP-11 (`relay_info`) smoke test. rustls to match the tree.
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# Smoke test against a real upstream relay. Gated behind `test-utils` (which
+# injects `MockRelayPool` for the shim↔outlay CVM hop) and `#[ignore]` on each
+# test (they hit the network). Run with:
+#   cargo test -p outlay-shim --features test-utils --test smoke -- --ignored --nocapture
+[[test]]
+name = "smoke"
+required-features = ["test-utils"]

@@ -3,8 +3,9 @@
 A Nostr relay exposed as a ContextVM (CVM) server. `outlay` sits between a
 CVM client and an upstream Nostr relay, translating CVM tool calls into NIP-01
 relay traffic and streaming relay events back over CEP-41 open-stream. The
-upstream relay is pluggable: any clearnet or localhost relay. A bundled
-in-process relay is a later milestone that reuses this proxy unchanged.
+upstream relay is pluggable: any clearnet or localhost relay, or a bundled
+in-process relay (Shape A — loopback-only internal upstream, on by default).
+Either way this proxy is unchanged.
 
 ## 1. Framing
 
@@ -116,6 +117,13 @@ per-WS-connection; the CVM reality is per-CEP-41-stream
 (`max_concurrent_streams`). v1 forwards upstream's value; grow toward a merged
 `limitation` rewrite when a real client is misled.
 
+Implementation: fetch with `reqwest` on the rustls TLS stack (already in the
+tree), and treat the body as a raw `serde_json::Value`. The typed
+`nostr::RelayInformationDocument` drops unknown fields (e.g. primal's
+`negentropy`), which would violate verbatim proxying. The overlay stamps
+`software: "outlay"`, `version`, and `proxy: true` on top, and moves the
+upstream's `software`/`version` under an `upstream` key. No cache in v1.
+
 ## 6. Upstream transport: reuse the SDK `RelayPool`
 
 The `rs-sdk` already ships `RelayPool`, wrapping `nostr-sdk`'s `Client`:
@@ -142,19 +150,18 @@ outlay/
   src/
     main.rs        // signer, RelayPool wiring, NostrServerTransport, banner
     handler.rs     // rmcp #[tool] glue (subscribe / publish_event / relay_info)
-                   //   + MessageSink trait + StreamWriter(OpenStreamWriter)
-    proxy.rs       // upstream forwarding loops, notification demux, sub-id namespace
+    proxy.rs       // upstream forwarding loops, notification demux, sub-id namespace,
+                   //   + StreamWriter (the CEP-41 sink the loops write to)
   design/
     design.md      // this document
 ```
 
 Reused near-verbatim from `cordn-rs`:
 
-- `MessageSink` trait + `StreamWriter(OpenStreamWriter)` adapter
-  (`cordn-server/src/methods.rs`).
-- The `select! { recv / sleep(is_active poll) }` loop with `SINK_ACTIVE_POLL`
+- Concrete `StreamWriter` sink (wraps `OpenStreamWriter`) — the
+  `select! { recv / sleep(is_active poll) }` loop with `SINK_ACTIVE_POLL`
   (`cordn-server/src/adapter.rs`) — backpressure and client-disconnect
-  handling.
+  handling. (Was a `MessageSink` trait; collapsed to its single impl.)
 
 ## 8. Gotchas
 
@@ -176,14 +183,17 @@ Ranked by severity.
    `Event` by sub_id; parse `Message` (carries sub_id for EOSE/CLOSED,
    event_id for OK).
 
-3. **Namespace upstream sub-ids to avoid collisions.** The pool multiplexes
-   one upstream socket and tags subs by id; two CVM clients that both pick
-   `"sub1"` would cross-receive events. Fix: transform the upstream id as
-   `<call-uuid>::<client-sub>` and strip the prefix on the way back. The
-   pool sees unique ids; the client still sees its bare id. One-line
-   transform; removes the whole collision class. (This is the one place a
-   pure one-socket-per-sub WS client would be more obviously correct; the
-   namespace transform gets us the same correctness with the pool.)
+3. **Per-call random upstream sub-ids to avoid collisions.** The pool
+   multiplexes one upstream socket and tags subs by id; two CVM clients that
+   both pick `"sub1"` would cross-receive events. Fix: mint a fresh
+   `SubscriptionId::generate()` per `subscribe` call and map it back to the
+   client's bare sub_id in every chunk. The pool sees unique ids; the client
+   sees only its bare id. (The original draft proposed
+   `<call-uuid>::<client-sub>`; abandoned — it can exceed NIP-01's 64-char
+   subscription-id limit. A random id is strictly better: short, length-safe,
+   and collision-proof for any realistic load. This is the one place a
+   one-socket-per-sub WS client would be more obviously correct; the
+   random-id mapping gets us the same correctness with the pool.)
 
 4. **Transparency = forward verbatim, never re-sign.** `publish_event`
    forwards the client's already-signed `Event` via `send_event(event)` (not
@@ -206,10 +216,12 @@ Ranked by severity.
    Surface the `AUTH` challenge as a `CLOSED`/`NOTICE` chunk and let the
    client fail. Do not broker AUTH in v1.
 
-8. **Authorization / open-proxy.** Without `allowed_public_keys`, anyone who
-   discovers the server relays arbitrary events through it to the upstream
-   (and the upstream sees our IP). Default to `allowed_public_keys`
-   (private server); open mode is an explicit opt-in.
+8. **Authorization — deferred (open proxy in v1).** outlay forwards events
+   for any CVM client in v1; there is no `allowed_public_keys` gate. This is
+   a conscious deferral, not an oversight: authz depends on the trust model
+   the companion WS shim (§9) will expose, so designing it now would be a
+   guess. It is trivial to add once that model is clear. Until then, do not
+   expose the server on untrusted networks.
 
 9. **Chunk sizing.** Open-stream caps: 512 KiB / 64 chunks buffered per
    stream. One chunk per NIP-01 message is safe (a single Nostr event is
@@ -220,12 +232,21 @@ Ranked by severity.
 ## 9. Roadmap
 
 - **v1 (this design):** proxy of a single upstream relay. `subscribe` +
-  `publish_event` + `relay_info`. Private by default. Namespaced sub-ids.
+  `publish_event` + `relay_info`. Per-call random upstream sub-ids. Open proxy
+  (authz deferred — see below).
 - **Next:** companion WS shim ("proxy for the proxies") so vanilla Nostr
   clients (gossip, nostr, web wallets) can reach CVM-exposed relays via a
-  localhost WS endpoint that translates to these tool calls.
-- **Later:** bundled in-process `nostr-rs-relay`, pointed at
-  `ws://127.0.0.1:<port>` as the upstream. Proxy code unchanged.
+  localhost WS endpoint that translates to these tool calls. Design:
+  [`shim.md`](./shim.md).
+- **Next:** authz (`allowed_public_keys`). Deferred until the shim clarifies
+  the real trust model (who may call tools, how clients identify) — designing
+  it now would be a guess. Trivial to add once the model is clear.
+- **Done:** bundled in-process relay (Shape A: loopback-only internal upstream).
+  Uses `nostr-sdk` 0.45-alpha's `LocalRelay` — **not** `nostr-rs-relay`, which is
+  a sidecar binary with a 2022-era dep tree and its own tokio runtime. Isolated
+  in a separate `outlay-relay` crate to keep the alpha off the default build
+  (§10.9). Enable with `OUTLAY_BUNDLED_RELAY=1`; SQLite (default) or memory.
+  Proxy code unchanged.
 - **Later:** multi-relay fan-in; synchronous-verb dispatcher if COUNT/AUTH
   land; NIP-42 AUTH brokering.
 
@@ -235,10 +256,24 @@ Ranked by severity.
    `relay_info` (sync). No `postMessage` dispatcher in v1.
 2. Upstream transport: the SDK `RelayPool`. Pure-WS only if forced.
 3. v1: single upstream URL.
-4. Authorization: private by default (`allowed_public_keys`); open is opt-in.
-5. Upstream sub-ids namespaced as `<call-uuid>::<client-sub>`.
+4. Authorization: deferred — open proxy in v1. The earlier "private by
+   default" stance is dropped; `allowed_public_keys` lands after the shim
+   clarifies the trust model. Do not deploy on untrusted networks meanwhile.
+5. Upstream sub-ids: a fresh `SubscriptionId::generate()` per `subscribe`
+   call, mapped back to the client's bare sub_id in chunks. (Earlier
+   `<call-uuid>::<client-sub>` abandoned — exceeds NIP-01's 64-char limit.)
 6. Crate layout: single binary crate to start; split a `core` lib only if a
    testable non-network surface emerges.
 7. `relay_info`: proxy upstream NIP-11 verbatim, overlay our `software`/
    `version` + `proxy` marker; synthesize a minimum when upstream has none.
 8. Transparency: forward client-signed events verbatim; never re-sign.
+9. Bundled relay: `nostr-sdk` 0.45-alpha's `LocalRelay` (a real WS server → the
+   proxy connects unchanged), isolated in a separate `outlay-relay` crate. The
+   crate boundary is a plain `String` URL — no `nostr` types cross — so
+   0.45-alpha (this crate) and 0.44 (pinned by `contextvm-sdk`, used by `outlay`
+   and the proxy) coexist in the final binary without type conflict. The default
+   `outlay` build pulls neither the crate nor the alpha; opt-in via
+   `bundled-relay`. SQLite is the default backend (`nostr-sqlite` `bundled` →
+   statically-linked, no system libsqlite3). `LocalRelay` can't report an
+   OS-assigned ephemeral port (its `url()` echoes the configured addr verbatim),
+   so `outlay-relay` scans a small loopback range when `port == 0`.

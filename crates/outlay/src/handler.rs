@@ -5,12 +5,10 @@
 //! Tools (design §3):
 //! - `subscribe`     — streaming; one call == one NIP-01 subscription.
 //! - `publish_event` — synchronous; returns the upstream OK status.
-//!
-//! `relay_info` (NIP-11) lands in the next step with its HTTP client.
+//! - `relay_info`    — synchronous; upstream's NIP-11 doc with outlay overlaid.
 
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use contextvm_sdk::transport::open_stream::OpenStreamWriter;
 use rmcp::{
     handler::server::wrapper::Parameters,
@@ -21,7 +19,7 @@ use rmcp::{
 };
 use serde::Serialize;
 
-use crate::proxy::{MessageSink, Proxy, ProxyError, PublishOutcome};
+use crate::proxy::{Proxy, ProxyError, PublishOutcome, StreamWriter};
 
 #[derive(Clone)]
 pub struct OutlayServer {
@@ -31,26 +29,6 @@ pub struct OutlayServer {
 impl OutlayServer {
     pub fn new(proxy: Arc<Proxy>) -> Self {
         Self { proxy }
-    }
-}
-
-/// Adapts the rmcp `OpenStreamWriter` to the proxy's [`MessageSink`] trait.
-/// Ported from cordn-server/src/methods.rs.
-struct StreamWriter(OpenStreamWriter);
-
-#[async_trait]
-impl MessageSink for StreamWriter {
-    async fn start(&self) -> bool {
-        self.0.start().await.is_ok()
-    }
-    async fn write(&self, msg: String) -> bool {
-        self.0.write(msg).await.is_ok() && self.0.is_active()
-    }
-    fn is_active(&self) -> bool {
-        self.0.is_active()
-    }
-    async fn close(&self) {
-        let _ = self.0.close().await;
     }
 }
 
@@ -142,6 +120,16 @@ impl OutlayServer {
         let out: PublishOutcome = self.proxy.publish_event(event).await.map_err(proxy_error)?;
         Ok(structured(out))
     }
+
+    #[tool(
+        description = "Fetch the proxied relay's NIP-11 information document, with outlay's \
+                       identity overlaid (software/version/proxy marker; upstream identity \
+                       preserved under `upstream`). Synchronous. Returns the document object."
+    )]
+    async fn relay_info(&self) -> Result<CallToolResult, ErrorData> {
+        let doc = self.proxy.relay_info().await.map_err(proxy_error)?;
+        Ok(structured(doc))
+    }
 }
 
 #[tool_handler]
@@ -154,7 +142,8 @@ impl ServerHandler for OutlayServer {
             )
             .with_instructions(
                 "Transparent Nostr relay proxy. Call subscribe (streaming) to open a NIP-01 \
-                 subscription, or publish_event to forward a signed event.",
+                 subscription, publish_event to forward a signed event, or relay_info for the \
+                 upstream's NIP-11 document.",
             )
     }
 }

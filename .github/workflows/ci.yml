@@ -1,0 +1,39 @@
+name: ci
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+
+      - name: fmt
+        run: cargo fmt --all -- --check
+
+      # Default build (bundled relay ON) — the shipping configuration.
+      - name: clippy (default)
+        run: cargo clippy --workspace --all-targets -- -D warnings
+      - name: test (default)
+        run: cargo test --workspace
+
+      # Proxy-only build (bundled relay OFF) — exercises the OUTLAY_PROXY_RELAY_URL
+      # path + the no-bundled error branch in config.
+      - name: clippy (proxy-only)
+        run: cargo clippy -p outlay --no-default-features --all-targets -- -D warnings
+      - name: test (proxy-only)
+        run: cargo test -p outlay --no-default-features
+
+      # Network-free E2E: in-process LocalRelay as the upstream + mocked CVM hop.
+      - name: network-free E2E (bundled relay)
+        run: cargo test -p outlay --features test-utils --test smoke_bundled

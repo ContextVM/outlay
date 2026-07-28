@@ -58,19 +58,51 @@ async fn main() -> Result<()> {
     };
     let server_pubkey = signer.public_key().to_hex();
 
-    // Upstream: connect the proxy relay pool (background; status logged async).
-    let proxy = Proxy::new(cfg.proxy_relay_url.clone())
-        .await
-        .with_context(|| format!("connecting upstream relay {}", cfg.proxy_relay_url))?;
+    // Upstream: the bundled in-process relay runs by default (self-contained).
+    // Set OUTLAY_PROXY_RELAY_URL to proxy an external relay instead.
+    #[cfg(feature = "bundled-relay")]
+    let bundled_relay = if cfg.proxy_relay_url.is_none() {
+        let backend = match cfg.bundled.backend.as_str() {
+            "memory" => outlay_relay::Backend::Memory,
+            // Anything else (incl. the default "sqlite") → persistent SQLite.
+            _ => outlay_relay::Backend::Sqlite,
+        };
+        Some(
+            outlay_relay::BundledRelay::spawn(
+                backend,
+                Some(std::path::Path::new(&cfg.bundled.db_path)),
+                cfg.bundled.port,
+            )
+            .await
+            .context("starting bundled relay")?,
+        )
+    } else {
+        None
+    };
 
-    print_banner(&server_pubkey, &cfg);
+    #[cfg(feature = "bundled-relay")]
+    let upstream_url: String = match &bundled_relay {
+        Some(b) => b.url().to_owned(),
+        // Proxy mode: OUTLAY_PROXY_RELAY_URL is set (config validated Some here).
+        None => cfg.proxy_relay_url.clone().expect("external upstream"),
+    };
+    #[cfg(not(feature = "bundled-relay"))]
+    let upstream_url: String = cfg.proxy_relay_url.clone().expect("external upstream");
+
+    // Upstream: connect the proxy relay pool (background; status logged async).
+    let proxy = Proxy::new(upstream_url.clone())
+        .await
+        .with_context(|| format!("connecting upstream relay {upstream_url}"))?;
+
+    print_banner(&server_pubkey, &cfg, &upstream_url);
 
     let transport = NostrServerTransport::new(signer, build_transport_config(&cfg))
         .await
         .context("connecting ContextVM server transport")?;
 
     tracing::info!(
-        upstream = %cfg.proxy_relay_url,
+        upstream = %upstream_url,
+        mode = if cfg.proxy_relay_url.is_none() { "bundled" } else { "proxy" },
         cvm_relays = ?cfg.cvm_relay_urls,
         announced = cfg.is_announced,
         server_pubkey = %server_pubkey,
@@ -90,6 +122,11 @@ async fn main() -> Result<()> {
         _ = shutdown_signal() => {
             tracing::info!("outlay server shutting down");
         }
+    }
+
+    #[cfg(feature = "bundled-relay")]
+    if let Some(b) = &bundled_relay {
+        b.shutdown();
     }
     Ok(())
 }
@@ -113,7 +150,7 @@ async fn shutdown_signal() {
     }
 }
 
-fn print_banner(server_pubkey: &str, cfg: &ServerConfig) {
+fn print_banner(server_pubkey: &str, cfg: &ServerConfig, upstream_url: &str) {
     let rule: String = "═".repeat(64);
     let cvm_lines = cfg
         .cvm_relay_urls
@@ -132,6 +169,6 @@ fn print_banner(server_pubkey: &str, cfg: &ServerConfig) {
     println!("{cvm_lines}");
     println!();
     println!("   upstream relay (proxied)");
-    println!("     • {}", cfg.proxy_relay_url);
+    println!("     • {upstream_url}");
     println!();
 }
