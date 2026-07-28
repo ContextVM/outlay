@@ -140,10 +140,9 @@ fn chunk(parts: serde_json::Value) -> String {
 fn nip11_origin(upstream: &str) -> Option<String> {
     let (scheme, rest) = if let Some(h) = upstream.strip_prefix("wss://") {
         ("https://", h)
-    } else if let Some(h) = upstream.strip_prefix("ws://") {
-        ("http://", h)
     } else {
-        return None;
+        let h = upstream.strip_prefix("ws://")?;
+        ("http://", h)
     };
     let authority = rest.split('/').next()?;
     Some(format!("{scheme}{authority}"))
