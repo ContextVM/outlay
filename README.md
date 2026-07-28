@@ -7,14 +7,80 @@ corresponding NIP-01 exchange, streaming relay events back over
 [CEP-41 open-stream](https://github.com/ContextVM/CEPs).
 
 **It just runs.** With no configuration, outlay starts a bundled in-process
-Nostr relay as its upstream — fully self-contained, persistent (SQLite), zero
-external dependencies. Point it at any other relay instead with a single env
-var; anything that speaks CVM can then read/write that relay through it.
+Nostr relay as its upstream — a working, persistent (SQLite) relay the moment it
+boots. Point it at any other relay instead with a single env var.
 
 > **Status:** v1 — `outlay` (bundled-relay default + external-upstream proxy
 > mode), `outlay-shim` (vanilla-NIP-01 bridge), and the release pipeline are
 > done and tested. See [`design/design.md`](./design/design.md) for the locked
 > design and [`design/shim.md`](./design/shim.md) for the shim.
+
+---
+
+## Run
+
+outlay is self-contained: no config means the bundled relay runs as the
+upstream. Pick any install path — all three are zero-config.
+
+**Docker** (no build; the volume persists the relay's SQLite across restarts):
+```sh
+docker run --rm -v outlay-data:/data ghcr.io/contextvm/outlay
+```
+
+**Prebuilt binary** (linux/amd64 or linux/arm64, from
+[Releases](https://github.com/ContextVM/outlay/releases)):
+```sh
+tar xzf outlay-amd64.tar.gz   # or outlay-arm64.tar.gz
+./outlay
+```
+
+**Build from source** (Rust ≥ 1.88):
+```sh
+cargo run
+```
+
+On startup outlay logs its **server pubkey**, the CVM relays it listens on, the
+upstream, and `mode=bundled`. **Copy that pubkey** — it's how clients address
+the server.
+
+**Proxy an external relay instead** (advanced) — reach any relay rather than the
+bundled one:
+```sh
+OUTLAY_PROXY_RELAY_URL=wss://relay.primal.net cargo run
+# or: docker run --rm -e OUTLAY_PROXY_RELAY_URL=wss://relay.primal.net ghcr.io/contextvm/outlay
+```
+
+### Connect a client
+
+outlay has **no inbound port** — it connects *out* to the CVM relays, and
+clients reach it there. Two ways in:
+
+- **CVM client** → connect to the CVM relay (`wss://relay.contextvm.org` by
+  default), target the server pubkey outlay printed, and call `subscribe` /
+  `publish_event` / `relay_info`.
+- **Vanilla Nostr client** (gossip, `nak`, web wallets) → doesn't speak CVM, so
+  run the shim and point the client at it:
+  ```sh
+  cargo run -p outlay-shim   # then connect the client to ws://localhost:8088/<server-pubkey>
+  ```
+
+### Try it
+
+With outlay running (`cargo run`), in another terminal publish a note to it
+through the shim, then read it back:
+
+```sh
+# 1. Start the shim (bridges vanilla NIP-01 → outlay over CVM):
+cargo run -p outlay-shim
+
+# 2. Publish a text note via the shim (<server-pubkey> = what outlay printed):
+nak event -c "hello from outlay" ws://localhost:8088/<server-pubkey>
+
+# 3. Read it back:
+nak req -k 1 -l 1 ws://localhost:8088/<server-pubkey>
+```
+
+---
 
 ## How it works
 
@@ -44,27 +110,11 @@ The core mapping: **one CEP-41 stream == one NIP-01 subscription.**
 Two independent relay connections live inside outlay:
 
 - **Upstream pool** — outlay's own `Proxy`, a `nostr-sdk` `Client` connected to
-  the upstream. By default that upstream is the bundled in-process relay
-  (loopback). With `OUTLAY_PROXY_RELAY_URL` set, it's that external relay.
-  Published events are forwarded **verbatim** (client-signed), never re-signed.
+  the upstream. By default that's the bundled in-process relay (loopback); with
+  `OUTLAY_PROXY_RELAY_URL` set, it's that external relay. Published events are
+  forwarded **verbatim** (client-signed), never re-signed.
 - **CVM transport** — the `NostrServerTransport` that CVM clients connect
   through, on the ContextVM relays you configure.
-
-## Quick start
-
-Requires Rust stable (MSRV **1.88**).
-
-```sh
-# Self-contained: zero config → bundled in-process relay (SQLite) as the upstream.
-cargo run
-
-# Or proxy an external relay instead (advanced):
-OUTLAY_PROXY_RELAY_URL=wss://relay.primal.net cargo run
-OUTLAY_PROXY_RELAY_URL=ws://localhost:8080 cargo run
-```
-
-On startup outlay logs its server pubkey, the CVM relays it listens on, the
-upstream, and `mode=bundled|proxy`.
 
 ## Configuration
 
@@ -99,13 +149,21 @@ process environment.
 
 `outlay-shim` is a localhost WebSocket endpoint that translates vanilla NIP-01
 (`REQ`/`EVENT`/`CLOSE`) into outlay's CVM tool calls, so ordinary Nostr clients
-(gossip, web wallets, `nak`) can reach CVM-exposed relays without speaking CVM.
-Path-keyed: `ws://localhost:8088/<server-pubkey-or-nprofile>`. Design in
+can reach CVM-exposed relays without speaking CVM. Path-keyed:
+`ws://localhost:8088/<server-pubkey-or-nprofile>` (hex, npub, or nprofile; an
+nprofile's relay hint overrides the configured CVM relays). Design in
 [`design/shim.md`](./design/shim.md).
 
 ```sh
 cargo run -p outlay-shim
 ```
+
+| Variable                       | Default                    | Description                                            |
+|--------------------------------|----------------------------|--------------------------------------------------------|
+| `OUTLAY_SHIM_LISTEN_ADDR`      | `127.0.0.1:8088`           | Address to listen on (the Docker image sets `0.0.0.0:8088`). |
+| `OUTLAY_SHIM_RELAY_URLS`       | `wss://relay.contextvm.org`| Comma-separated CVM relays used to find outlay servers.|
+| `OUTLAY_SHIM_PRIVATE_KEY`      | _(ephemeral)_              | Hex/nsec shim key.                                     |
+| `OUTLAY_SHIM_ENCRYPTION_MODE`  | `optional`                 | CVM transport encryption: `disabled` / `optional` / `required`. |
 
 ## Testing
 
@@ -113,34 +171,21 @@ cargo run -p outlay-shim
 cargo test --workspace                                # unit tests (default = bundled)
 cargo test -p outlay --no-default-features            # proxy-only config path
 cargo test -p outlay --features test-utils --test smoke_bundled   # network-free E2E (bundled relay)
-cargo test -features test-utils --test smoke -- --ignored --nocapture  # real network (primal)
+cargo test --features test-utils --test smoke -- --ignored --nocapture  # real network (primal)
 cargo fmt --all && cargo clippy --workspace --all-targets -- -D warnings
 ```
 
 ## Releases
 
-Releases are driven by the `Makefile` + GitHub Actions (`.github/workflows/`):
+Binaries (linux/amd64 + linux/arm64) and multi-arch Docker images are published
+on every `v*` tag — see [Releases](https://github.com/ContextVM/outlay/releases)
+and `ghcr.io/contextvm/outlay` · `ghcr.io/contextvm/outlay-shim`. The `Makefile`
++ GitHub Actions drive it:
 
 ```sh
-make version          # print the current shared version
-make release          # tag the CURRENT version + push (inaugural / re-release)
-make patch            # or minor / major → bump, commit, tag v<ver>, push
-```
-
-A pushed `v*` tag triggers `release.yml`, which builds `outlay` + `outlay-shim`
-natively for **linux/amd64** and **linux/arm64** (free arm64 runners — no
-cross-compile), attaches the tarballs + a SHA256 `checksums.txt` to the GitHub
-Release, and publishes multi-arch Docker images for both crates to GHCR:
-
-```
-ghcr.io/contextvm/outlay          ghcr.io/contextvm/outlay-shim
-```
-
-Run the images directly:
-
-```sh
-docker run --rm -v outlay-data:/data ghcr.io/contextvm/outlay          # zero-config bundled relay
-docker run --rm -p 8088:8088 ghcr.io/contextvm/outlay-shim             # NIP-01 bridge on :8088
+make version    # print the current shared version
+make release    # tag the CURRENT version + push (inaugural / re-release)
+make patch      # or minor / major → bump, commit, tag v<ver>, push
 ```
 
 ## Project layout
