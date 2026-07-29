@@ -270,3 +270,44 @@ async fn bundled_relay_serves_stored_event_on_query() {
     let _ = call.abort(Some("done".to_string())).await;
     cleanup(fx).await;
 }
+
+/// Issue 2 regression: `relay_info` against the bundled relay. The bundled relay
+/// speaks WS only — nothing answers a plain HTTP GET on its loopback origin, so
+/// the upstream NIP-11 fetch must soft-fail to the synthesized doc rather than
+/// surface a transport error. Before the fix this call returned an error result
+/// (`is_error`, no structured content); after, it returns outlay's synthesized
+/// identity (software=outlay, proxy=true, no upstream fields).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn bundled_relay_relay_info_falls_back_when_no_nip11() {
+    let fx = fixture().await;
+
+    let result = fx
+        .client
+        .peer()
+        .call_tool(CallToolRequestParams::new("relay_info"))
+        .await
+        .expect("relay_info call");
+    assert_ne!(
+        result.is_error,
+        Some(true),
+        "relay_info must not error when the upstream serves no NIP-11: {result:?}"
+    );
+    let doc = result
+        .structured_content
+        .as_ref()
+        .expect("relay_info structured content");
+    assert_eq!(doc["software"], "outlay", "synthesized identity stamped");
+    assert_eq!(doc["proxy"], true, "proxy flag set");
+    assert!(
+        doc.get("supported_nips")
+            .and_then(|v| v.as_array())
+            .is_some(),
+        "synthesized doc carries supported_nips"
+    );
+    assert!(
+        doc.get("upstream").is_none(),
+        "no upstream fields when the doc is synthesized"
+    );
+
+    cleanup(fx).await;
+}

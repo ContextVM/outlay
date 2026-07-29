@@ -345,13 +345,21 @@ impl Proxy {
                 self.upstream_url
             ))
         })?;
-        let resp = self
+        // Soft-fail transport errors (notably the bundled in-process relay,
+        // which speaks WS only — nothing answers HTTP on its loopback origin)
+        // and fall back to the synthesized doc rather than surfacing a hard
+        // error. Design §5: relay_info is best-effort; the overlay/synthesized
+        // path below already tolerates non-2xx / non-JSON bodies the same way.
+        let resp = match self
             .http
             .get(&origin)
             .header("Accept", "application/nostr+json")
             .send()
             .await
-            .map_err(|e| ProxyError::RelayInfo(e.to_string()))?;
+        {
+            Ok(resp) => resp,
+            Err(_) => return Ok(synthesized_proxy_info()),
+        };
         // Robust: any 2xx with a JSON object body is the doc. Some relays
         // serve NIP-11 regardless of the Accept header.
         if resp.status().is_success() {
