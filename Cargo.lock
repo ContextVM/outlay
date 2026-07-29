@@ -1415,7 +1415,7 @@ checksum = "e55a7b7f0accc9fdd8e514f122a697adf824d55de481ca26c31ff8f9a8e813c5"
 
 [[package]]
 name = "outlay"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "contextvm-sdk",
@@ -1435,7 +1435,7 @@ dependencies = [
 
 [[package]]
 name = "outlay-relay"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "nostr-database 0.45.0-alpha.7",
@@ -1448,7 +1448,7 @@ dependencies = [
 
 [[package]]
 name = "outlay-shim"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "anyhow",
  "axum",
