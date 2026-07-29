@@ -28,7 +28,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # `contextvm-sdk` default features include `rmcp`; it also pulls `nostr-sdk`
 # transitively, so the explicit `nostr-sdk` dep below reuses an existing build
 # artifact rather than adding a new one (same trick cordn-server pulls).
-contextvm-sdk = "0.2.1"
+contextvm-sdk = "0.2.2"
 rmcp = { version = "1.8", features = ["server", "macros"] }
 nostr-sdk = "0.44"
 # Bundled in-process relay (Shape A). On by default (see `default` features);

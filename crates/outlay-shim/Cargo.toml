@@ -21,7 +21,7 @@ futures = "0.3"
 
 # CVM client transport (`contextvm-sdk` defaults to `rmcp`; it also pulls
 # `nostr-sdk` transitively). We enable rmcp's client role explicitly.
-contextvm-sdk = "0.2.1"
+contextvm-sdk = "0.2.2"
 rmcp = { version = "1.8", features = ["client"] }
 nostr-sdk = "0.44" # NIP-19 path parsing (re-exports `nostr`).
 

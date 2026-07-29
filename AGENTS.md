@@ -14,7 +14,7 @@ NIP-01 exchange with an upstream relay, streaming relay events back over CEP-41
 open-stream. Point it at any relay (clearnet or localhost) and anything that
 speaks CVM can read/write that relay through it.
 
-**Stack:** Rust 2021, MSRV **1.88**. `contextvm-sdk` 0.2.1 (CVM transport +
+**Stack:** Rust 2021, MSRV **1.88**. `contextvm-sdk` 0.2.2 (CVM transport +
 `RelayPool`), `rmcp` 1.8 (MCP server handler + `#[tool]` macros; also re-exports
 `schemars` for tool-param derives), `nostr-sdk` 0.44 (upstream relay client +
 NIP-01 types), `tokio`, `serde`/`serde_json`, `thiserror`, `anyhow`, `tracing`,

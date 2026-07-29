@@ -92,9 +92,9 @@ dependencies = [
 
 [[package]]
 name = "async-wsocket"
-version = "0.15.0"
+version = "0.16.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c69f24cf7a798027c6b0801de5bfd05d01fe343e87a8329f7c8b46a6d3bc4a79"
+checksum = "efa9ef232c1731ddbe4a306b5b5dcf9e50a924d6bd086d4784939d14f8e78daa"
 dependencies = [
  "futures",
  "futures-util",
@@ -388,9 +388,9 @@ dependencies = [
 
 [[package]]
 name = "contextvm-sdk"
-version = "0.2.1"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "468788e72e2af0e187e59abc6fbdbdf13e6a32cc50a685474981506503771fd6"
+checksum = "eb5b32fb07e8e5438c473d8acb64e4dc9a6abb0fe3ae93b3a62dd42f497be2e8"
 dependencies = [
  "async-trait",
  "futures",
@@ -495,13 +495,13 @@ dependencies = [
 
 [[package]]
 name = "displaydoc"
-version = "0.2.6"
+version = "0.2.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1ac70aa55017e108007fbaf5aa0f54b021c98f92ff8af59d42eda9da96e3dd4f"
+checksum = "c6232dd377dcc64799954cbd3a9bb882e9cdc1308ccd87b1c098f1fb2eaf82a8"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.3",
 ]
 
 [[package]]
@@ -810,9 +810,9 @@ dependencies = [
 
 [[package]]
 name = "http"
-version = "1.4.2"
+version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6970f50e31d6fc17d3fa27329444bfa74e196cf62e95052a3f6fee181dba6425"
+checksum = "918d3568bebf352712bc2ef3d46a8bcf1a75b373be6539de198e9105cbbf9ce0"
 dependencies = [
  "bytes",
  "itoa",
@@ -1223,7 +1223,7 @@ dependencies = [
  "hex",
  "instant",
  "scrypt",
- "secp256k1",
+ "secp256k1 0.29.1",
  "serde",
  "serde_json",
  "unicode-normalization",
@@ -1232,9 +1232,9 @@ dependencies = [
 
 [[package]]
 name = "nostr"
-version = "0.45.0-alpha.6"
+version = "0.45.0-alpha.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5e90ba68fc04b87254ef574e10aef1fe92d44839043f42e37a7c4c4a1e7e4c82"
+checksum = "33749a9fec481115e477981e9e1b5e1be1d8bcfaf8c36f82626e4053cb9a8337"
 dependencies = [
  "base64",
  "bech32",
@@ -1246,7 +1246,7 @@ dependencies = [
  "faster-hex",
  "opaquerr",
  "rand 0.10.2",
- "secp256k1",
+ "secp256k1 0.30.0",
  "serde",
  "serde_json",
  "unicode-normalization",
@@ -1267,12 +1267,12 @@ dependencies = [
 
 [[package]]
 name = "nostr-database"
-version = "0.45.0-alpha.6"
+version = "0.45.0-alpha.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77c37167c3f289fea43e82f8bb24bb2006a2fb803abaaa908b25f1d3ca0b2bcc"
+checksum = "0764956a8167f8ed35201ef5074ea2e42caf4e0430c2d42dbe8777e254daf720"
 dependencies = [
  "btreecap",
- "nostr 0.45.0-alpha.6",
+ "nostr 0.45.0-alpha.7",
  "opaquerr",
 ]
 
@@ -1287,23 +1287,23 @@ dependencies = [
 
 [[package]]
 name = "nostr-gossip"
-version = "0.45.0-alpha.6"
+version = "0.45.0-alpha.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bb24a1f82e3fe9e3e9b4549e916ec168d4c21c2e55c61fa6be9f98218872cd37"
+checksum = "1507d84997e7b62c35f5714e907796cea9510d1640bf7b8e2dece65ae4e5d035"
 dependencies = [
- "nostr 0.45.0-alpha.6",
+ "nostr 0.45.0-alpha.7",
  "opaquerr",
 ]
 
 [[package]]
 name = "nostr-memory"
-version = "0.45.0-alpha.6"
+version = "0.45.0-alpha.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b854c66cba2341170f201e9c86a668fd83739b3feb399cb162a1492c49f27ed8"
+checksum = "30b4c41602dc1ebad8bbf55dec625c46706dcd7a486c4611ee1e8dbd6e405802"
 dependencies = [
  "btreecap",
- "nostr 0.45.0-alpha.6",
- "nostr-database 0.45.0-alpha.6",
+ "nostr 0.45.0-alpha.7",
+ "nostr-database 0.45.0-alpha.7",
  "tokio",
 ]
 
@@ -1342,19 +1342,19 @@ dependencies = [
 
 [[package]]
 name = "nostr-sdk"
-version = "0.45.0-alpha.6"
+version = "0.45.0-alpha.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5b197627792d5f02ab257c1bff30d4475e0ebc85229a82515b05d6717c6a4fbc"
+checksum = "68d78f007cd9044bfb5944f29f4a90117cb5b882d444b423d2782777da5fde45"
 dependencies = [
  "async-utility",
- "async-wsocket 0.15.0",
+ "async-wsocket 0.16.0",
  "faster-hex",
  "futures",
  "lru 0.18.1",
  "negentropy",
- "nostr 0.45.0-alpha.6",
- "nostr-database 0.45.0-alpha.6",
- "nostr-gossip 0.45.0-alpha.6",
+ "nostr 0.45.0-alpha.7",
+ "nostr-database 0.45.0-alpha.7",
+ "nostr-gossip 0.45.0-alpha.7",
  "nostr-memory",
  "opaquerr",
  "tokio",
@@ -1365,13 +1365,13 @@ dependencies = [
 
 [[package]]
 name = "nostr-sqlite"
-version = "0.45.0-alpha.6"
+version = "0.45.0-alpha.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "07b45d32003b3ace7e5d9d8f5d49acd08a77a1181ac4f658249a180cf71d31e2"
+checksum = "d3640a45199e76cc8d826d27999879485c4925b68c33b09005f00f6b2dfc808f"
 dependencies = [
  "async-utility",
- "nostr 0.45.0-alpha.6",
- "nostr-database 0.45.0-alpha.6",
+ "nostr 0.45.0-alpha.7",
+ "nostr-database 0.45.0-alpha.7",
  "rusqlite",
  "serde_json",
  "tokio",
@@ -1438,9 +1438,9 @@ name = "outlay-relay"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "nostr-database 0.45.0-alpha.6",
+ "nostr-database 0.45.0-alpha.7",
  "nostr-memory",
- "nostr-sdk 0.45.0-alpha.6",
+ "nostr-sdk 0.45.0-alpha.7",
  "nostr-sqlite",
  "tokio",
  "tracing",
@@ -1902,9 +1902,9 @@ checksum = "6b1e7f9a428571be2dc5bc0505c13fb6bf936822b894ec87abf8a08a4e51742d"
 
 [[package]]
 name = "rustls"
-version = "0.23.42"
+version = "0.23.43"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3c54fcab019b409d04215d3a17cb438fd7fbf192ee61461f20f4fe18704bc138"
+checksum = "0283386ce02abc0151e1761d08802dfe86c173b0b494af5cbc086574e453da06"
 dependencies = [
  "once_cell",
  "ring",
@@ -2009,6 +2009,17 @@ dependencies = [
  "rand 0.8.7",
  "secp256k1-sys",
  "serde",
+]
+
+[[package]]
+name = "secp256k1"
+version = "0.30.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b50c5943d326858130af85e049f2661ba3c78b26589b8ab98e65e80ae44a1252"
+dependencies = [
+ "bitcoin_hashes",
+ "rand 0.8.7",
+ "secp256k1-sys",
 ]
 
 [[package]]
@@ -2340,13 +2351,13 @@ dependencies = [
 
 [[package]]
 name = "tokio-macros"
-version = "2.7.1"
+version = "2.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "6328af13490e73a9b4694030fafd93f8c8c6a9dede33e821c3fc63eddf8042ba"
+checksum = "78773a2a397f451582ce068015985c33193cf6dea8b74d2a639fe457b2f07b0e"
 dependencies = [
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.3",
 ]
 
 [[package]]
