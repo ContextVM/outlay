@@ -24,6 +24,32 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(
         "outlay-shim listening on http://{listen} — vanilla NIP-01 clients connect at ws://{listen}/<server-pubkey>"
     );
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
     Ok(())
+}
+
+/// Handle SIGINT/SIGTERM so the process actually exits when signalled. Without
+/// an explicit handler the kernel drops terminate-signals delivered to PID 1
+/// (the binary's role in a container without `--init`), so `docker run` Ctrl+C
+/// appears to hang until Docker force-KILLs after the 3rd interrupt. Mirrors
+/// `outlay`'s handler; the two crates share no code by design.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        let _ = tokio::signal::ctrl_c().await;
+    };
+    #[cfg(unix)]
+    {
+        let mut sigterm = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("install SIGTERM handler");
+        tokio::select! {
+            _ = ctrl_c => {}
+            _ = sigterm.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        ctrl_c.await;
+    }
 }
