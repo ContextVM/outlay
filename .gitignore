@@ -11,3 +11,6 @@
 # Local env files (may contain private keys)
 .env
 .env.local
+
+# Bundled in-process relay SQLite backend (OUTLAY_BUNDLED_BACKEND=sqlite)
+outlay-relay.db*
