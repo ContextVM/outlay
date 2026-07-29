@@ -6,6 +6,7 @@
 //! same channel. Dropping the loop cancels everything.
 
 use std::collections::HashMap;
+use std::sync::Arc;
 
 use axum::extract::ws::{Message, WebSocket};
 use contextvm_sdk::{call_tool_stream, ClientOpenStreamHandle};
@@ -14,7 +15,7 @@ use rmcp::model::CallToolRequestParams;
 use rmcp::service::Peer;
 use rmcp::RoleClient;
 use serde_json::Value;
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, Notify};
 use tokio::task::JoinHandle;
 
 use crate::config::ShimConfig;
@@ -54,13 +55,16 @@ pub async fn handle_ws(mut socket: WebSocket, config: ShimConfig, pubkey: String
         let _ = sink.close().await;
     });
 
-    // sub_id → the spawned task owning that subscribe call. Aborting the
-    // handle drops `call` (the CEP-41 consumer session); outlay then closes the
-    // upstream subscription when its open-stream keepalive notices the dead
-    // reader. (An immediate explicit `call.abort()` can't be awaited inside a
-    // `tokio::spawn` — `ToolStreamCall` is `!Sync` via its `result: BoxFuture`,
-    // so `&call` isn't `Send`. Upgrade path: a Send-safe cancel-by-token API.)
-    let mut subs: HashMap<String, JoinHandle<()>> = HashMap::new();
+    // sub_id → (cancel signal, the spawned task owning that subscribe call). On
+    // NIP-01 CLOSE the signal fires and the task tears the stream down via the
+    // handle's Send-safe `cancel(token)`, publishing an abort frame so outlay
+    // unsubscribes the upstream promptly. The plain alternative — abort the task
+    // and drop `call` — also works, but outlay only notices the dropped reader
+    // when its keepalive probe times out (up to the configured 60 s), leaving
+    // the upstream subscription lingering. (`ToolStreamCall::abort()` can't be
+    // awaited here: the call is `!Sync` via `result: BoxFuture`, so `&call`
+    // isn't `Send`; the `ClientOpenStreamHandle` is `Sync`.)
+    let mut subs: HashMap<String, (Arc<Notify>, JoinHandle<()>)> = HashMap::new();
     let peer = client.peer();
 
     while let Some(frame) = stream.next().await {
@@ -73,21 +77,23 @@ pub async fn handle_ws(mut socket: WebSocket, config: ShimConfig, pubkey: String
         match translate::parse_client_frame(&text) {
             Some(ClientMsg::Req { sub_id, filters }) => {
                 // NIP-01 REQ-on-existing-sub == replace: cancel the old one first.
-                if let Some(h) = subs.remove(&sub_id) {
-                    h.abort();
+                if let Some((cancel, _)) = subs.remove(&sub_id) {
+                    cancel.notify_one();
                 }
+                let cancel = Arc::new(Notify::new());
                 let task = tokio::spawn(subscribe_loop(
                     peer.clone(),
                     handle.clone(),
                     sub_id.clone(),
                     filters,
                     tx.clone(),
+                    cancel.clone(),
                 ));
-                subs.insert(sub_id, task);
+                subs.insert(sub_id, (cancel, task));
             }
             Some(ClientMsg::Close { sub_id }) => {
-                if let Some(h) = subs.remove(&sub_id) {
-                    h.abort();
+                if let Some((cancel, _)) = subs.remove(&sub_id) {
+                    cancel.notify_one();
                 }
             }
             Some(ClientMsg::Publish(event)) => {
@@ -101,9 +107,10 @@ pub async fn handle_ws(mut socket: WebSocket, config: ShimConfig, pubkey: String
         }
     }
 
-    // Cleanup: abort every subscribe, end the writer, cancel the CVM client.
-    for h in subs.values() {
-        h.abort();
+    // Cleanup: cancel every subscribe (prompt reader-session teardown), end the
+    // writer, then cancel the CVM client.
+    for (cancel, _) in subs.values() {
+        cancel.notify_one();
     }
     drop(subs);
     drop(tx);
@@ -112,14 +119,16 @@ pub async fn handle_ws(mut socket: WebSocket, config: ShimConfig, pubkey: String
 }
 
 /// One CEP-41 `subscribe` call, pumping NIP-01 frame chunks into the channel
-/// until the stream ends or errors. Cancellation is external (the caller aborts
-/// this task's `JoinHandle`).
+/// until the stream ends, errors, or `cancel` is signaled. On cancel it tears
+/// the stream down via `handle.cancel(token)` so outlay unsubscribes the
+/// upstream promptly instead of waiting on its keepalive probe.
 async fn subscribe_loop(
     peer: Peer<RoleClient>,
     handle: ClientOpenStreamHandle,
     sub_id: String,
     filters: Vec<Value>,
     tx: mpsc::Sender<Message>,
+    cancel: Arc<Notify>,
 ) {
     let params = CallToolRequestParams::new("subscribe").with_arguments(transport::args(
         serde_json::json!({
@@ -127,33 +136,48 @@ async fn subscribe_loop(
             "filters": filters,
         }),
     ));
-    let mut call = match call_tool_stream(&peer, &handle, params).await {
-        Ok(c) => c,
-        Err(e) => {
-            let _ = tx
-                .send(Message::text(translate::closed_frame(
-                    &sub_id,
-                    &e.to_string(),
-                )))
-                .await;
-            return;
-        }
-    };
-    // Dropping `call` on task-abort (or natural return) tears down the CEP-41
-    // consumer; the upstream CLOSE rides outlay's open-stream keepalive.
-    while let Some(chunk) = call.stream.next().await {
-        match chunk {
-            Ok(c) => {
-                if tx.send(Message::text(c)).await.is_err() {
-                    return;
-                }
-            }
+    // Establish the stream, bailing out if a CLOSE/disconnect beats setup (there
+    // is nothing to cancel yet — the connect is simply dropped).
+    let mut call = tokio::select! {
+        r = call_tool_stream(&peer, &handle, params) => match r {
+            Ok(c) => c,
             Err(e) => {
                 let _ = tx
                     .send(Message::text(translate::closed_frame(
                         &sub_id,
                         &e.to_string(),
                     )))
+                    .await;
+                return;
+            }
+        },
+        _ = cancel.notified() => return,
+    };
+    loop {
+        tokio::select! {
+            chunk = call.stream.next() => match chunk {
+                Some(Ok(c)) => {
+                    if tx.send(Message::text(c)).await.is_err() {
+                        return;
+                    }
+                }
+                Some(Err(e)) => {
+                    let _ = tx
+                        .send(Message::text(translate::closed_frame(
+                            &sub_id,
+                            &e.to_string(),
+                        )))
+                        .await;
+                    return;
+                }
+                None => return,
+            },
+            _ = cancel.notified() => {
+                let _ = handle
+                    .cancel(
+                        &call.progress_token,
+                        Some("client closed subscription".to_string()),
+                    )
                     .await;
                 return;
             }
