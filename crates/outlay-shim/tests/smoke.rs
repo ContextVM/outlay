@@ -88,9 +88,10 @@ async fn fixture() -> Fixture {
         gift_wrap_mode: GiftWrapMode::Ephemeral,
         max_cached_outlays: 64,
         max_ws_message_bytes: 1 << 20,
+        enable_relay: false,
         test_relay_pool: Some(Arc::new(shim_pool) as Arc<dyn RelayPoolTrait>),
     };
-    let app = server::router(server::AppState::new(cfg));
+    let app = server::router(server::AppState::new(cfg, None));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind shim");

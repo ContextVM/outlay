@@ -55,7 +55,7 @@ OUTLAY_PROXY_RELAY_URL=wss://relay.primal.net cargo run
 outlay has **no inbound port** — it connects *out* to the CVM relays, and
 clients reach it there. Two ways in:
 
-- **CVM client** → connect to the CVM relay (`wss://relay.contextvm.org` by
+- **CVM client** → connect to the CVM relay (`wss://nostr.wtf` by
   default), target the server pubkey outlay printed, and call `subscribe` /
   `publish_event` / `relay_info`.
 - **Vanilla Nostr client** (gossip, `nak`, web wallets) → doesn't speak CVM, so
@@ -124,7 +124,7 @@ process environment.
 | Variable                      | Default                    | Description                                            |
 |-------------------------------|----------------------------|--------------------------------------------------------|
 | `OUTLAY_PROXY_RELAY_URL`      | _(unset → bundled)_        | External upstream to proxy. Unset = run the bundled relay (default). |
-| `OUTLAY_RELAY_URLS`           | `wss://relay.contextvm.org`| Comma-separated CVM relays the server listens on.      |
+| `OUTLAY_RELAY_URLS`           | `wss://nostr.wtf`          | Comma-separated CVM relays the server listens on.      |
 | `OUTLAY_SERVER_PRIVATE_KEY`   | _(ephemeral)_              | Hex/nsec server key. Unset → new key each start.       |
 | `OUTLAY_SERVER_NAME`          | `outlay`                   | CVM profile name.                                      |
 | `OUTLAY_ANNOUNCED`            | `false`                    | Public discovery (kind 11316) on/off.                  |
@@ -161,7 +161,7 @@ cargo run -p outlay-shim
 | Variable                       | Default                    | Description                                            |
 |--------------------------------|----------------------------|--------------------------------------------------------|
 | `OUTLAY_SHIM_LISTEN_ADDR`      | `127.0.0.1:8088`           | Address to listen on (the Docker image sets `0.0.0.0:8088`). |
-| `OUTLAY_SHIM_RELAY_URLS`       | `wss://relay.contextvm.org`| Comma-separated CVM relays used to find outlay servers.|
+| `OUTLAY_SHIM_RELAY_URLS`       | `wss://nostr.wtf`          | Comma-separated CVM relays used to find outlay servers.|
 | `OUTLAY_SHIM_PRIVATE_KEY`      | _(ephemeral)_              | Hex/nsec shim key.                                     |
 | `OUTLAY_SHIM_ENCRYPTION_MODE`  | `optional`                 | CVM transport encryption: `disabled` / `optional` / `required`. |
 

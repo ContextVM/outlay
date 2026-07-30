@@ -5,6 +5,7 @@ pub mod config;
 pub mod conn;
 pub mod nip11;
 pub mod path;
+pub mod relay;
 pub mod server;
 pub mod translate;
 pub mod transport;

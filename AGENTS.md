@@ -66,7 +66,7 @@ Required env (see `crates/outlay/src/config.rs` for the full set and `.env` load
 - `OUTLAY_PROXY_RELAY_URL` — the upstream relay to proxy. **Required** unless
   the bundled relay is enabled (`OUTLAY_BUNDLED_RELAY=1`), which supplies the
   upstream itself.
-- `OUTLAY_RELAY_URLS` — CVM relays to listen on (default `wss://relay.contextvm.org`).
+- `OUTLAY_RELAY_URLS` — CVM relays to listen on (default `wss://nostr.wtf`).
 - `OUTLAY_SERVER_PRIVATE_KEY` — hex/nsec; unset → ephemeral.
 - `OUTLAY_BUNDLED_RELAY` — `1`/`true` runs the in-process relay (`bundled-relay`
   feature) as the loopback upstream. With it: `OUTLAY_BUNDLED_BACKEND` (`sqlite`

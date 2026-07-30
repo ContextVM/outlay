@@ -34,6 +34,12 @@ pub struct ShimConfig {
     pub max_cached_outlays: usize,
     /// WS message size cap (inbound + outbound).
     pub max_ws_message_bytes: usize,
+    /// Whether to run the colocated memoryless relay endpoint at `/`. On by
+    /// default: outlays that want to collapse their CVM transport relay into the
+    /// shim (one fewer hop) advertise the shim's public URL as their relay hint;
+    /// outlays that don't are unaffected. Zero idle cost — the relay is
+    /// memoryless and event-driven.
+    pub enable_relay: bool,
     /// Test-only: an injected mock CVM relay pool (replaces the real transport,
     /// giving a network-free shim↔outlay hop). Mirrors outlay's `test-utils`.
     #[cfg(feature = "test-utils")]
@@ -46,10 +52,12 @@ pub enum ConfigError {
     InvalidEncryption(String),
     #[error("invalid OUTLAY_SHIM_GIFT_WRAP_MODE: {0} (expected persistent|ephemeral|optional)")]
     InvalidGiftWrapMode(String),
+    #[error("Invalid boolean environment variable: {0}")]
+    InvalidBoolean(String),
 }
 
 pub fn default_relay_urls() -> Vec<String> {
-    vec!["wss://relay.contextvm.org".into()]
+    vec!["wss://nostr.wtf".into()]
 }
 
 fn opt_string(env: &HashMap<String, String>, name: &str) -> Option<String> {
@@ -57,6 +65,16 @@ fn opt_string(env: &HashMap<String, String>, name: &str) -> Option<String> {
         .map(|s| s.trim())
         .filter(|s| !s.is_empty())
         .map(str::to_owned)
+}
+
+/// Parse a boolean env var accepting `true`/`1`/`false`/`0` (case-insensitive).
+fn opt_bool_env(env: &HashMap<String, String>, name: &str) -> Result<Option<bool>, ConfigError> {
+    match opt_string(env, name).map(|s| s.to_ascii_lowercase()) {
+        None => Ok(None),
+        Some(s) if s == "true" || s == "1" => Ok(Some(true)),
+        Some(s) if s == "false" || s == "0" => Ok(Some(false)),
+        Some(other) => Err(ConfigError::InvalidBoolean(other)),
+    }
 }
 
 /// Read the shim config from the given environment map (defaults applied for
@@ -115,6 +133,8 @@ pub fn read_shim_config(env: &HashMap<String, String>) -> Result<ShimConfig, Con
         .unwrap_or(64)
         .max(1);
 
+    let enable_relay = opt_bool_env(env, "OUTLAY_SHIM_RELAY")?.unwrap_or(true);
+
     Ok(ShimConfig {
         listen_addr,
         relay_urls,
@@ -124,6 +144,7 @@ pub fn read_shim_config(env: &HashMap<String, String>) -> Result<ShimConfig, Con
         gift_wrap_mode,
         max_cached_outlays,
         max_ws_message_bytes,
+        enable_relay,
         #[cfg(feature = "test-utils")]
         test_relay_pool: None,
     })
@@ -153,13 +174,14 @@ mod tests {
     fn defaults() {
         let c = read_shim_config(&HashMap::new()).unwrap();
         assert_eq!(c.listen_addr, "127.0.0.1:8088");
-        assert_eq!(c.relay_urls, vec!["wss://relay.contextvm.org"]);
+        assert_eq!(c.relay_urls, vec!["wss://nostr.wtf"]);
         assert_eq!(c.encryption_mode, EncryptionMode::Optional);
         assert_eq!(c.connect_timeout, std::time::Duration::from_secs(15));
         assert_eq!(c.max_ws_message_bytes, 1_048_576);
         assert!(c.private_key.is_none());
         assert_eq!(c.gift_wrap_mode, GiftWrapMode::Ephemeral);
         assert_eq!(c.max_cached_outlays, 64);
+        assert!(c.enable_relay, "relay endpoint defaults to on");
     }
 
     #[test]
@@ -172,6 +194,7 @@ mod tests {
             ("OUTLAY_SHIM_PRIVATE_KEY", "nsec1..."),
             ("OUTLAY_SHIM_GIFT_WRAP_MODE", "optional"),
             ("OUTLAY_SHIM_MAX_CACHED_OUTLAYS", "8"),
+            ("OUTLAY_SHIM_RELAY", "false"),
         ]))
         .unwrap();
         assert_eq!(c.listen_addr, "127.0.0.1:9100");
@@ -181,6 +204,10 @@ mod tests {
         assert_eq!(c.private_key.as_deref(), Some("nsec1..."));
         assert_eq!(c.gift_wrap_mode, GiftWrapMode::Optional);
         assert_eq!(c.max_cached_outlays, 8);
+        assert!(
+            !c.enable_relay,
+            "OUTLAY_SHIM_RELAY=false disables the relay"
+        );
     }
 
     #[test]
@@ -203,5 +230,13 @@ mod tests {
     fn max_cached_outlays_floors_to_one() {
         let c = read_shim_config(&env(&[("OUTLAY_SHIM_MAX_CACHED_OUTLAYS", "0")])).unwrap();
         assert_eq!(c.max_cached_outlays, 1);
+    }
+
+    #[test]
+    fn invalid_relay_flag_rejected() {
+        assert!(matches!(
+            read_shim_config(&env(&[("OUTLAY_SHIM_RELAY", "yes")])),
+            Err(ConfigError::InvalidBoolean(_))
+        ));
     }
 }

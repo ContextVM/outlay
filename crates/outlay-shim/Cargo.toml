@@ -32,6 +32,16 @@ axum = { version = "0.8", features = ["ws"] }
 # Bounded LRU for the per-outlay transport cache. Already in the dep tree
 # transitively (nostr-sdk pulls it), so this reuses an existing build artifact.
 lru = "0.18"
+# The colocated memoryless relay endpoint at `/`: an `outlay-relay`
+# `MemorylessDatabase`-backed `LocalRelay` (0.45-alpha, isolated from this
+# crate's 0.44 by the plain-URL boundary in `outlay-relay`). `default-features
+# = false` keeps SQLite out of the shim binary — only the memoryless backend is
+# used.
+outlay-relay = { path = "../outlay-relay", default-features = false }
+# WS client for the `/` relay pipe: each upgraded client WS is forwarded
+# verbatim to the loopback `LocalRelay`. Pinned to match axum 0.8's tungstenite
+# (0.29) so the two `Message` types share the same `bytes::Bytes`.
+tokio-tungstenite = { version = "0.29", default-features = false, features = ["connect"] }
 
 [features]
 default = []
@@ -43,7 +53,9 @@ test-utils = ["contextvm-sdk/test-utils"]
 # The smoke test drives a real outlay server (mock CVM hop, real upstream).
 outlay = { path = "../outlay" }
 # A vanilla NIP-01 WS client driving the shim over a real (loopback) socket.
-tokio-tungstenite = "0.26"
+# Pinned to match the `/` relay pipe (and axum 0.8) so a single tungstenite
+# version is compiled into the shim.
+tokio-tungstenite = "0.29"
 # HTTP client for the NIP-11 (`relay_info`) smoke test. rustls to match the tree.
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 

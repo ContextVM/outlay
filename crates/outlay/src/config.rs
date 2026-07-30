@@ -60,7 +60,7 @@ pub enum ConfigError {
 }
 
 pub fn default_cvm_relay_urls() -> Vec<String> {
-    vec!["wss://relay.contextvm.org".into()]
+    vec!["wss://nostr.wtf".into()]
 }
 
 fn opt_string(env: &std::collections::HashMap<String, String>, name: &str) -> Option<String> {
@@ -172,7 +172,7 @@ mod tests {
         let c =
             read_server_config(&env(&[("OUTLAY_PROXY_RELAY_URL", "ws://localhost:8080")])).unwrap();
         assert_eq!(c.proxy_relay_url.as_deref(), Some("ws://localhost:8080"));
-        assert_eq!(c.cvm_relay_urls, vec!["wss://relay.contextvm.org"]);
+        assert_eq!(c.cvm_relay_urls, vec!["wss://nostr.wtf"]);
         assert_eq!(c.server_name, "outlay");
         assert!(!c.is_announced);
         assert!(c.private_key_hex.is_none());

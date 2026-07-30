@@ -18,7 +18,35 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let listen = cfg.listen_addr.clone();
-    let app = server::router(server::AppState::new(cfg));
+
+    // Colocated memoryless relay at `/`: lets outlays collapse their CVM
+    // transport relay into the shim. Soft-fail: if it can't bind, the bridge
+    // (the shim's primary role) still serves.
+    let enable_relay = cfg.enable_relay;
+    let relay_handle = if enable_relay {
+        match outlay_shim::relay::spawn().await {
+            Ok(h) => {
+                tracing::info!(
+                    relay_url = %h.url(),
+                    "memoryless relay endpoint enabled at / (outlays may use it as their CVM transport relay)"
+                );
+                Some(h)
+            }
+            Err(e) => {
+                tracing::error!(
+                    error = ?e,
+                    "failed to start the memoryless relay; continuing without it (the bridge still serves)"
+                );
+                None
+            }
+        }
+    } else {
+        tracing::info!("memoryless relay endpoint disabled (OUTLAY_SHIM_RELAY=false)");
+        None
+    };
+    let relay_url = relay_handle.as_ref().map(|h| h.url().to_owned());
+
+    let app = server::router(server::AppState::new(cfg, relay_url));
 
     let listener = tokio::net::TcpListener::bind(&listen).await?;
     tracing::info!(
@@ -27,6 +55,10 @@ async fn main() -> anyhow::Result<()> {
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
+
+    // Drop the relay handle on shutdown for a clean stop (process exit would
+    // also tear it down).
+    drop(relay_handle);
     Ok(())
 }
 

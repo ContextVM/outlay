@@ -17,12 +17,23 @@ and bridges traffic both ways.
 > remain out of scope (§10). The CVM client half is already proven by `outlay`'s
 > smoke tests.
 
-## 1. Role: a CVM *client*, not a relay
+## 1. Role: a CVM *client* (and an optional memoryless relay) for outlay
 
 The shim is a CVM **client** of outlay, and a NIP-01 **server** to vanilla
 clients. It holds no database, no event store, and no subscription state beyond
 routing — it is a pure protocol translator. This is the key framing: every
 NIP-01 frame maps to an outlay tool call defined in [`design.md`](./design.md) §2.
+
+It **additionally** serves an optional **memoryless NIP-01 relay at `/`** (§12):
+a storage-less `LocalRelay` (reused from `outlay-relay`, backed by a
+`MemorylessDatabase`) that broadcasts live events to current subscribers and
+retains nothing. This is outlay's **default CVM transport relay**
+(`wss://nostr.wtf`, where the shim is hosted), collapsing the transport relay
+into the shim and removing one network hop. An outlay opts *out* by setting
+`OUTLAY_RELAY_URLS` to a third-party relay (e.g. `wss://relay.contextvm.org`);
+the bridge follows each outlay's nprofile relay hint (§3), so mixed deployments
+coexist. The relay is event-driven and zero-cost when idle, defaulting on
+(`OUTLAY_SHIM_RELAY=false` to disable).
 
 **The shim does not depend on the `outlay` crate.** It speaks the CVM protocol
 (`contextvm-sdk`) to any outlay server. `outlay` and `outlay-shim` are siblings,
@@ -72,7 +83,7 @@ user). Three accepted encodings, parsed with `nostr`'s NIP-19 helpers:
 
 **Relay selection:** if the address is an `nprofile` with relay hints, those
 hints are the CVM relays used to reach the server. Otherwise fall back to
-`OUTLAY_SHIM_RELAY_URLS` (default `wss://relay.contextvm.org`). Hints win over
+`OUTLAY_SHIM_RELAY_URLS` (default `wss://nostr.wtf`). Hints win over
 env; env wins over the default.
 
 Invalid path segment → HTTP `400` (HTTP) or WS-close-with-`NOTICE` (WS).
@@ -202,18 +213,20 @@ Internal shim module layout (modeled on `nostr-rs-relay`):
 
 ```
 crates/outlay-shim/src/
-  main.rs         config (env) + axum serve + banner
+  main.rs         config (env) + axum serve + banner; spawns the memoryless relay
   config.rs       env config + defaults
   server.rs       axum routes, WS upgrade vs HTTP dispatch (Upgrade header)
   conn.rs         per-connection state: HashMap<sub_id, subscribe handle>
+  relay.rs        memoryless relay: spawn + `/` upgrade frame-pipe to LocalRelay
   translate.rs    NIP-01 frame ↔ CVM call translation (the testable pure seam)
   nip11.rs        relay_info fetch + JSON/HTML rendering + synthesized root doc
   path.rs         hex/npub/nprofile pubkey + relay-hint parsing
 ```
 
 HTTP/WS stack: **axum** (`axum::extract::ws` is tungstenite underneath). The
-`/<pubkey>` handler inspects the `Upgrade` header — WS upgrade vs HTTP, mirroring
-`nostr-rs-relay`'s `(path, has_upgrade)` dispatch with a fraction of the glue.
+`/` and `/<pubkey>` handlers both inspect the `Upgrade` header — WS upgrade vs
+HTTP, mirroring `nostr-rs-relay`'s `(path, has_upgrade)` dispatch with a fraction
+of the glue.
 
 ## 8. Configuration
 
@@ -222,11 +235,12 @@ Loaded from `.env` then `.env.local` (first-write-wins), then the process env.
 | Variable                       | Default                    | Notes |
 |--------------------------------|----------------------------|-------|
 | `OUTLAY_SHIM_LISTEN_ADDR`      | `127.0.0.1:8088`           | Local bind. Localhost-only by design (§9.7). |
-| `OUTLAY_SHIM_RELAY_URLS`       | `wss://relay.contextvm.org`| CVM relays (comma-sep). Overridden by nprofile hints. |
+| `OUTLAY_SHIM_RELAY_URLS`       | `wss://nostr.wtf`          | CVM relays (comma-sep). Overridden by nprofile hints.   |
 | `OUTLAY_SHIM_PRIVATE_KEY`      | _(ephemeral)_              | hex/nsec client key. New key each run if unset. |
 | `OUTLAY_SHIM_ENCRYPTION_MODE`  | `optional`                 | `optional`/`disabled`/`required`. Must be compatible with the server. |
 | `OUTLAY_SHIM_CONNECT_TIMEOUT`  | `15` (seconds)             | CVM transport handshake timeout. |
 | `OUTLAY_SHIM_MAX_WS_MESSAGE_BYTES` | `1048576` (1 MiB)      | WS frame/message limit (borrowed from `nostr-rs-relay`). |
+| `OUTLAY_SHIM_RELAY`            | `true`                     | Run the colocated memoryless relay at `/` (§12). |
 
 ## 9. Gotchas
 
@@ -280,12 +294,62 @@ Ranked by severity.
   `JoinHandle::abort` cancellation path: 0 events leak after CLOSE, connection
   stays usable), and `concurrent_subscriptions_isolated` (two concurrent CEP-41
   streams through the single per-connection writer, no sub_id cross-talk).
+- **Done (§12):** colocated **memoryless relay at `/`**, so outlays can collapse
+  their CVM transport relay into the shim. `outlay-relay`'s `LocalRelay` reused
+  with a `MemorylessDatabase`; axum `/` upgrade is a verbatim frame-pipe to it.
+  Network-free integration test in `crates/outlay-shim/tests/relay.rs` (REQ →
+  EOSE, publish → live EVENT + OK, and no-backfill on a later REQ).
 - **Next:** NIP-11 TTL cache; transport pooling by server-pubkey (shared across
   WS connections and NIP-11 fetches — safe, because CEP-41 streams demux per
-  call).
+  call); bridge self-transport loopback shortcut to the `/` relay (skip the
+  reverse-proxy hop when a hinted outlay lives on the shim's own public URL).
 - **Later:** authz + NIP-42 (once the trust model this shim exposes is clear);
   TLS / public bind; rate-limiting + metrics (`governor` + `prometheus`, as
   `nostr-rs-relay` does); multi-relay fan-out.
+
+## 12. Memoryless relay endpoint at `/`
+
+The shim serves an **ephemeral, storage-less NIP-01 relay** at `/`, on by
+default (`OUTLAY_SHIM_RELAY=false` disables). It is outlay's **default CVM
+transport relay** (`wss://nostr.wtf`, where the shim is hosted), collapsing the
+transport relay into the shim — one fewer network hop and no dependency on a
+third-party relay for the transport:
+
+```text
+  default (nostr.wtf): outlay ──CVM transport──► shim:/ (relay) ──► shim:/<pubkey> (bridge) ──► vanilla client
+  opt-out:             outlay ──CVM transport──► <third-party relay, e.g. relay.contextvm.org> ──► shim:/<pubkey> ──► vanilla client
+```
+
+**Addressing-driven.** The bridge follows each outlay's nprofile relay hint
+(§3), so it reaches that outlay on the shim's relay automatically. An outlay
+opts *out* of the collapse by setting `OUTLAY_RELAY_URLS` to a third-party relay
+(and advertising it as its hint); mixed deployments coexist on one shim.
+
+**Reuse, not reinvention.** The relay is `outlay-relay`'s `LocalRelay`
+(`nostr-sdk` 0.45-alpha, isolated from the shim's 0.44 by the plain-URL boundary)
+ plugged with a `MemorylessDatabase` — a `NostrDatabase` whose `save_event`
+returns `Success` without storing (so `LocalRelay`'s in-memory broadcast still
+fires to live subscribers) and whose `query` returns empty (so every `REQ`
+ `EOSE`s at once, then streams live events only). The SDK therefore owns every
+NIP-01 semantic (REQ/EVENT/CLOSE/EOSE/OK/NOTICE, filter matching, REQ-replace,
+rate limits, id verification, broadcast backpressure); the shim owns only a
+**verbatim frame-pipe** from the axum `/` WS upgrade to the loopback `LocalRelay`
+(no interpretation). It accepts every kind and stores nothing — correct for
+NIP-01 ephemeral events (kinds 20000–29999, e.g. CVM's kind-21059 gift wraps),
+which relays must broadcast live and must not persist.
+
+**Why memoryless.** The CVM transport subscribes with `since: now`, i.e. it asks
+for no backfill; ephemeral gift wraps are spec-defined as broadcast-only. So a
+ storage-less relay matches the transport's contract exactly, with the lowest
+ memory pressure and no storage DoS surface. A message published in the gap
+ before a recipient's `REQ` lands is dropped (self-heals via the caller's retry);
+ this is the same behavior any relay has for ephemeral events on reconnect.
+
+**Co-location / public exposure.** The shim already runs behind a reverse proxy
+on clearnet, so outlays anywhere can reach `wss://<shim>/`. The relay is a public
+endpoint; lean on the reverse proxy for TLS / per-IP rate-limiting / connection
+ caps (the relay itself inherits `LocalRelay`'s per-connection REQ limits, sub-id
+length cap, filter-limit cap, and id verification). Authz remains deferred (§9.7).
 
 ## 11. Locked decisions
 
@@ -293,7 +357,7 @@ Ranked by severity.
    core crate. The shim does **not** depend on `outlay`.
 2. **Addressing:** path-keyed, `ws://host:port/<server-pubkey>`. Multiplexer.
 3. **Path pubkey:** hex / npub / nprofile; nprofile relay hints override
-   `OUTLAY_SHIM_RELAY_URLS` (default `wss://relay.contextvm.org`).
+   `OUTLAY_SHIM_RELAY_URLS` (default `wss://nostr.wtf`).
 4. **NIP-11:** content-negotiated — `Accept: application/nostr+json` → JSON from
    outlay `relay_info` (+CORS); else → HTML. Both at `/<pubkey>`. Synthesized
    shim doc at `/`.
@@ -308,5 +372,9 @@ Ranked by severity.
    client's `tools/call` is processed by a real server. Hardcoded (no env knob);
    revisit only if a server's real `initialize` payload is ever needed.
 10. **Client key:** ephemeral per run unless `OUTLAY_SHIM_PRIVATE_KEY` is set.
-11. **Out of PoC:** authz, NIP-42, transport pooling, NIP-11 cache, TLS/public
-    bind, rate-limiting, metrics.
+11. **`/` relay (§12):** an optional memoryless `LocalRelay` (reused from
+    `outlay-relay` with a `MemorylessDatabase`), served at `/` by a verbatim
+    axum WS frame-pipe. On by default (`OUTLAY_SHIM_RELAY=false` disables).
+    Accepts all kinds; stores nothing. Outlays opt in via nprofile relay hints.
+12. **Out of PoC:** authz, NIP-42, transport pooling, NIP-11 cache, TLS/public
+    bind, rate-limiting, metrics, bridge loopback self-shortcut to the `/` relay.

@@ -6,7 +6,7 @@
 
 FROM debian:stable-slim
 
-# ca-certificates: the upstream CVM relays (relay.contextvm.org) are wss://.
+# ca-certificates: the CVM relays (nostr.wtf) are wss://.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*
