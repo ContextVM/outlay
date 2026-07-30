@@ -8,6 +8,8 @@
 //! Env-var conventions follow `cordn-server` (`OUTLAY_` prefix). `.env` then
 //! `.env.local` load first-write-wins (via `dotenvy`); missing files ignored.
 
+use contextvm_sdk::GiftWrapMode;
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ServerConfig {
     /// External upstream relay to proxy (e.g. `ws://localhost:8080`,
@@ -22,6 +24,11 @@ pub struct ServerConfig {
     pub server_name: String,
     pub server_about: Option<String>,
     pub is_announced: bool,
+    /// Outbound gift-wrap kind policy. Default `Ephemeral` (kind 21059): CVM
+    /// open-stream control frames are transient, so the relay cannot replay
+    /// stale ones into a later stream. Requires the CVM relay + clients to
+    /// handle 21059; both sides must agree (`Ephemeral` rejects incoming 1059).
+    pub gift_wrap_mode: GiftWrapMode,
     /// Bundled in-process relay config (Shape A: loopback-only internal upstream).
     /// Only present under the `bundled-relay` feature; absent otherwise.
     #[cfg(feature = "bundled-relay")]
@@ -48,6 +55,8 @@ pub enum ConfigError {
     MissingProxyRelayUrl,
     #[error("Invalid boolean environment variable: {0}")]
     InvalidBoolean(String),
+    #[error("invalid OUTLAY_GIFT_WRAP_MODE: {0} (expected persistent|ephemeral|optional)")]
+    InvalidGiftWrapMode(String),
 }
 
 pub fn default_cvm_relay_urls() -> Vec<String> {
@@ -114,6 +123,17 @@ pub fn read_server_config(
         None => default_cvm_relay_urls(),
     };
 
+    // Default `Ephemeral` (21059): stream control frames are transient, so the
+    // relay cannot replay stale ones into a fresh stream. Both sides must agree
+    // on the kind; `Ephemeral` rejects incoming persistent (1059) wraps.
+    let gift_wrap_mode = match opt_string(env, "OUTLAY_GIFT_WRAP_MODE").as_deref() {
+        None => GiftWrapMode::Ephemeral,
+        Some("ephemeral") => GiftWrapMode::Ephemeral,
+        Some("persistent") => GiftWrapMode::Persistent,
+        Some("optional") => GiftWrapMode::Optional,
+        Some(other) => return Err(ConfigError::InvalidGiftWrapMode(other.into())),
+    };
+
     Ok(ServerConfig {
         proxy_relay_url,
         cvm_relay_urls,
@@ -121,6 +141,7 @@ pub fn read_server_config(
         server_name: opt_string(env, "OUTLAY_SERVER_NAME").unwrap_or_else(|| "outlay".into()),
         server_about: opt_string(env, "OUTLAY_SERVER_ABOUT"),
         is_announced: opt_bool(env, "OUTLAY_ANNOUNCED")?.unwrap_or(false),
+        gift_wrap_mode,
         #[cfg(feature = "bundled-relay")]
         bundled,
     })
@@ -155,6 +176,7 @@ mod tests {
         assert_eq!(c.server_name, "outlay");
         assert!(!c.is_announced);
         assert!(c.private_key_hex.is_none());
+        assert_eq!(c.gift_wrap_mode, GiftWrapMode::Ephemeral);
     }
 
     #[test]
@@ -164,12 +186,14 @@ mod tests {
             ("OUTLAY_RELAY_URLS", "wss://a.test, wss://b.test"),
             ("OUTLAY_SERVER_NAME", "my-outlay"),
             ("OUTLAY_ANNOUNCED", "1"),
+            ("OUTLAY_GIFT_WRAP_MODE", "persistent"),
         ]))
         .unwrap();
         assert_eq!(c.proxy_relay_url.as_deref(), Some("wss://relay.nostr.net"));
         assert_eq!(c.cvm_relay_urls, vec!["wss://a.test", "wss://b.test"]);
         assert_eq!(c.server_name, "my-outlay");
         assert!(c.is_announced);
+        assert_eq!(c.gift_wrap_mode, GiftWrapMode::Persistent);
     }
 
     // Without the `bundled-relay` feature, an unset upstream is a hard error
@@ -210,5 +234,16 @@ mod tests {
         )]))
         .unwrap();
         assert_eq!(c.proxy_relay_url.as_deref(), Some("wss://relay.primal.net"));
+    }
+
+    #[test]
+    fn invalid_gift_wrap_mode_rejected() {
+        assert!(matches!(
+            read_server_config(&env(&[
+                ("OUTLAY_PROXY_RELAY_URL", "ws://localhost:8080"),
+                ("OUTLAY_GIFT_WRAP_MODE", "sealed"),
+            ])),
+            Err(ConfigError::InvalidGiftWrapMode(_))
+        ));
     }
 }

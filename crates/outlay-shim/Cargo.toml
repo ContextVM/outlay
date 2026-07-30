@@ -29,6 +29,9 @@ nostr-sdk = "0.44" # NIP-19 path parsing (re-exports `nostr`).
 # is tungstenite underneath, so the frame limits + ping/keepalive model carries
 # over from `nostr-rs-relay`.
 axum = { version = "0.8", features = ["ws"] }
+# Bounded LRU for the per-outlay transport cache. Already in the dep tree
+# transitively (nostr-sdk pulls it), so this reuses an existing build artifact.
+lru = "0.18"
 
 [features]
 default = []

@@ -6,7 +6,7 @@
 
 use std::collections::HashMap;
 
-use contextvm_sdk::EncryptionMode;
+use contextvm_sdk::{EncryptionMode, GiftWrapMode};
 
 #[derive(Clone)]
 pub struct ShimConfig {
@@ -21,6 +21,17 @@ pub struct ShimConfig {
     pub encryption_mode: EncryptionMode,
     /// CVM transport connect timeout.
     pub connect_timeout: std::time::Duration,
+    /// Outbound gift-wrap kind policy. Default `Ephemeral` (kind 21059): CVM
+    /// open-stream control frames are not stored by the relay, so they cannot be
+    /// replayed/backfilled into a later stream — removes the stored-frame replay
+    /// root cause outright. Requires the CVM relay + the server to handle 21059;
+    /// both sides must agree (`Ephemeral` rejects incoming 1059).
+    pub gift_wrap_mode: GiftWrapMode,
+    /// Max distinct outlay identities kept cached (each = one CVM transport +
+    /// relay subscription). Hot identities stay cached for the process lifetime;
+    /// least-recently-used identities evict at the cap. Bounds memory/connections
+    /// against drive-by traffic to random `/<pubkey>` paths.
+    pub max_cached_outlays: usize,
     /// WS message size cap (inbound + outbound).
     pub max_ws_message_bytes: usize,
     /// Test-only: an injected mock CVM relay pool (replaces the real transport,
@@ -33,6 +44,8 @@ pub struct ShimConfig {
 pub enum ConfigError {
     #[error("invalid OUTLAY_SHIM_ENCRYPTION_MODE: {0} (expected optional|disabled|required)")]
     InvalidEncryption(String),
+    #[error("invalid OUTLAY_SHIM_GIFT_WRAP_MODE: {0} (expected persistent|ephemeral|optional)")]
+    InvalidGiftWrapMode(String),
 }
 
 pub fn default_relay_urls() -> Vec<String> {
@@ -76,6 +89,17 @@ pub fn read_shim_config(env: &HashMap<String, String>) -> Result<ShimConfig, Con
         Some(other) => return Err(ConfigError::InvalidEncryption(other.into())),
     };
 
+    // Default `Ephemeral` (21059): stream control frames are transient, so the
+    // relay cannot replay stale ones into a fresh stream. Both sides must agree
+    // on the kind; `Ephemeral` rejects incoming persistent (1059) wraps.
+    let gift_wrap_mode = match opt_string(env, "OUTLAY_SHIM_GIFT_WRAP_MODE").as_deref() {
+        None => GiftWrapMode::Ephemeral,
+        Some("ephemeral") => GiftWrapMode::Ephemeral,
+        Some("persistent") => GiftWrapMode::Persistent,
+        Some("optional") => GiftWrapMode::Optional,
+        Some(other) => return Err(ConfigError::InvalidGiftWrapMode(other.into())),
+    };
+
     let connect_timeout = std::time::Duration::from_secs(
         opt_string(env, "OUTLAY_SHIM_CONNECT_TIMEOUT")
             .and_then(|s| s.parse().ok())
@@ -86,12 +110,19 @@ pub fn read_shim_config(env: &HashMap<String, String>) -> Result<ShimConfig, Con
         .and_then(|s| s.parse().ok())
         .unwrap_or(1_048_576);
 
+    let max_cached_outlays = opt_string(env, "OUTLAY_SHIM_MAX_CACHED_OUTLAYS")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(64)
+        .max(1);
+
     Ok(ShimConfig {
         listen_addr,
         relay_urls,
         private_key: opt_string(env, "OUTLAY_SHIM_PRIVATE_KEY"),
         encryption_mode,
         connect_timeout,
+        gift_wrap_mode,
+        max_cached_outlays,
         max_ws_message_bytes,
         #[cfg(feature = "test-utils")]
         test_relay_pool: None,
@@ -127,6 +158,8 @@ mod tests {
         assert_eq!(c.connect_timeout, std::time::Duration::from_secs(15));
         assert_eq!(c.max_ws_message_bytes, 1_048_576);
         assert!(c.private_key.is_none());
+        assert_eq!(c.gift_wrap_mode, GiftWrapMode::Ephemeral);
+        assert_eq!(c.max_cached_outlays, 64);
     }
 
     #[test]
@@ -137,6 +170,8 @@ mod tests {
             ("OUTLAY_SHIM_ENCRYPTION_MODE", "disabled"),
             ("OUTLAY_SHIM_CONNECT_TIMEOUT", "30"),
             ("OUTLAY_SHIM_PRIVATE_KEY", "nsec1..."),
+            ("OUTLAY_SHIM_GIFT_WRAP_MODE", "optional"),
+            ("OUTLAY_SHIM_MAX_CACHED_OUTLAYS", "8"),
         ]))
         .unwrap();
         assert_eq!(c.listen_addr, "127.0.0.1:9100");
@@ -144,6 +179,8 @@ mod tests {
         assert_eq!(c.encryption_mode, EncryptionMode::Disabled);
         assert_eq!(c.connect_timeout, std::time::Duration::from_secs(30));
         assert_eq!(c.private_key.as_deref(), Some("nsec1..."));
+        assert_eq!(c.gift_wrap_mode, GiftWrapMode::Optional);
+        assert_eq!(c.max_cached_outlays, 8);
     }
 
     #[test]
@@ -152,5 +189,19 @@ mod tests {
             read_shim_config(&env(&[("OUTLAY_SHIM_ENCRYPTION_MODE", "encrypted")])),
             Err(ConfigError::InvalidEncryption(_))
         ));
+    }
+
+    #[test]
+    fn invalid_gift_wrap_mode_rejected() {
+        assert!(matches!(
+            read_shim_config(&env(&[("OUTLAY_SHIM_GIFT_WRAP_MODE", "sealed")])),
+            Err(ConfigError::InvalidGiftWrapMode(_))
+        ));
+    }
+
+    #[test]
+    fn max_cached_outlays_floors_to_one() {
+        let c = read_shim_config(&env(&[("OUTLAY_SHIM_MAX_CACHED_OUTLAYS", "0")])).unwrap();
+        assert_eq!(c.max_cached_outlays, 1);
     }
 }

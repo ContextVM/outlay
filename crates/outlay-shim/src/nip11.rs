@@ -11,7 +11,7 @@ use serde_json::Value;
 
 use crate::config::ShimConfig;
 use crate::path::{parse_path, ParsedPath};
-use crate::transport::build_client;
+use crate::transport::TransportCache;
 
 const NIP11_JSON: &str = "application/nostr+json";
 
@@ -21,27 +21,35 @@ pub async fn serve_root(headers: &HeaderMap) -> Response {
 }
 
 /// `GET /<pubkey>` — the server's real NIP-11, fetched via outlay's `relay_info`.
-pub async fn serve_pubkey(cfg: &ShimConfig, headers: &HeaderMap, pubkey: &str) -> Response {
+pub async fn serve_pubkey(
+    transports: &TransportCache,
+    cfg: &ShimConfig,
+    headers: &HeaderMap,
+    pubkey: &str,
+) -> Response {
     let parsed = match parse_path(pubkey) {
         Ok(p) => p,
         Err(e) => return plain(StatusCode::BAD_REQUEST, &e.to_string()),
     };
-    let doc = match fetch_nip11(cfg, &parsed).await {
+    let doc = match fetch_nip11(transports, cfg, &parsed).await {
         Ok(d) => d,
         Err(e) => return plain(StatusCode::BAD_GATEWAY, &e.to_string()),
     };
     render(&doc, headers)
 }
 
-async fn fetch_nip11(cfg: &ShimConfig, parsed: &ParsedPath) -> anyhow::Result<Value> {
-    // Transient transport per request (design §4). Slow; cache later.
-    let (client, _handle) = build_client(cfg, parsed).await?;
-    let result = client
-        .peer()
+async fn fetch_nip11(
+    transports: &TransportCache,
+    cfg: &ShimConfig,
+    parsed: &ParsedPath,
+) -> anyhow::Result<Value> {
+    // Shares the cached transport for this outlay (one relay subscription, no
+    // per-request churn). `_handle` is unused — `relay_info` is a plain RPC.
+    let (peer, _handle) = transports.get(cfg, parsed).await?;
+    let result = peer
         .call_tool(CallToolRequestParams::new("relay_info"))
         .await
         .map_err(|e| anyhow::anyhow!("relay_info: {e}"))?;
-    let _ = client.cancel().await;
     Ok(result.structured_content.unwrap_or(Value::Null))
 }
 

@@ -5,7 +5,7 @@
 use anyhow::{Context, Result};
 use contextvm_sdk::transport::open_stream::OpenStreamConfig;
 use contextvm_sdk::transport::server::{NostrServerTransport, NostrServerTransportConfig};
-use contextvm_sdk::{signer, EncryptionMode, GiftWrapMode, ServerInfo};
+use contextvm_sdk::{signer, EncryptionMode, ServerInfo};
 use rmcp::ServiceExt;
 
 use outlay::config::{self, ServerConfig};
@@ -21,7 +21,7 @@ fn build_transport_config(cfg: &ServerConfig) -> NostrServerTransportConfig {
         .with_relay_urls(cfg.cvm_relay_urls.clone())
         .with_announced_server(cfg.is_announced)
         .with_encryption_mode(EncryptionMode::Optional)
-        .with_gift_wrap_mode(GiftWrapMode::Optional)
+        .with_gift_wrap_mode(cfg.gift_wrap_mode)
         .with_server_info(server_info)
         // CEP-41 open-stream is the backbone of `subscribe` (one call == one
         // NIP-01 subscription). Opt in, with bumped keepalives mirroring

@@ -18,7 +18,7 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let listen = cfg.listen_addr.clone();
-    let app = server::router(server::AppState { config: cfg });
+    let app = server::router(server::AppState::new(cfg));
 
     let listener = tokio::net::TcpListener::bind(&listen).await?;
     tracing::info!(

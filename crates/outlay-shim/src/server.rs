@@ -8,14 +8,33 @@ use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::any;
 use axum::Router;
+use std::num::NonZeroUsize;
+use std::sync::Arc;
 
 use crate::config::ShimConfig;
 use crate::conn;
 use crate::nip11;
+use crate::transport::TransportCache;
 
 #[derive(Clone)]
 pub struct AppState {
     pub config: ShimConfig,
+    /// One shared CVM transport per outlay identity, reused across all
+    /// connections/requests to it.
+    pub transports: Arc<TransportCache>,
+}
+
+impl AppState {
+    pub fn new(config: ShimConfig) -> Self {
+        // `read_shim_config` floors this to >= 1; the cap is NonZero so
+        // `LruCache::new` can't panic on 0.
+        let cap = NonZeroUsize::new(config.max_cached_outlays)
+            .expect("config floors max_cached_outlays to >= 1");
+        Self {
+            config,
+            transports: Arc::new(TransportCache::new(cap)),
+        }
+    }
 }
 
 pub fn router(state: AppState) -> Router {
@@ -42,12 +61,12 @@ async fn pubkey_handler(
             Ok(ws) => ws
                 .max_message_size(state.config.max_ws_message_bytes)
                 .max_frame_size(state.config.max_ws_message_bytes)
-                .on_upgrade(move |socket| conn::handle_ws(socket, state.config.clone(), pubkey))
+                .on_upgrade(move |socket| conn::handle_ws(socket, state, pubkey))
                 .into_response(),
             Err(rej) => (StatusCode::BAD_REQUEST, rej.to_string()).into_response(),
         }
     } else {
-        nip11::serve_pubkey(&state.config, req.headers(), &pubkey)
+        nip11::serve_pubkey(&state.transports, &state.config, req.headers(), &pubkey)
             .await
             .into_response()
     }

@@ -18,14 +18,14 @@ use serde_json::Value;
 use tokio::sync::{mpsc, Notify};
 use tokio::task::JoinHandle;
 
-use crate::config::ShimConfig;
 use crate::path::parse_path;
+use crate::server::AppState;
 use crate::translate::{self, ClientMsg};
-use crate::transport::{self, build_client};
+use crate::transport::args;
 
 const OUTBOUND_BUF: usize = 256;
 
-pub async fn handle_ws(mut socket: WebSocket, config: ShimConfig, pubkey: String) {
+pub async fn handle_ws(mut socket: WebSocket, state: AppState, pubkey: String) {
     let parsed = match parse_path(&pubkey) {
         Ok(p) => p,
         Err(e) => {
@@ -34,7 +34,10 @@ pub async fn handle_ws(mut socket: WebSocket, config: ShimConfig, pubkey: String
         }
     };
 
-    let (client, handle) = match build_client(&config, &parsed).await {
+    // One shared, long-lived transport per outlay identity (see `TransportCache`).
+    // The transport outlives this connection, so there is no per-connection
+    // `cancel()` — only per-subscribe teardown.
+    let (peer, handle) = match state.transports.get(&state.config, &parsed).await {
         Ok(v) => v,
         Err(e) => {
             close_with_notice(&mut socket, &e.to_string()).await;
@@ -65,7 +68,6 @@ pub async fn handle_ws(mut socket: WebSocket, config: ShimConfig, pubkey: String
     // awaited here: the call is `!Sync` via `result: BoxFuture`, so `&call`
     // isn't `Send`; the `ClientOpenStreamHandle` is `Sync`.)
     let mut subs: HashMap<String, (Arc<Notify>, JoinHandle<()>)> = HashMap::new();
-    let peer = client.peer();
 
     while let Some(frame) = stream.next().await {
         let text = match frame {
@@ -107,15 +109,15 @@ pub async fn handle_ws(mut socket: WebSocket, config: ShimConfig, pubkey: String
         }
     }
 
-    // Cleanup: cancel every subscribe (prompt reader-session teardown), end the
-    // writer, then cancel the CVM client.
+    // Cleanup: cancel every subscribe (prompt reader-session teardown via the
+    // shared handle) and end the writer. The shared transport is NOT cancelled —
+    // it outlives this connection and serves other connections to the same outlay.
     for (cancel, _) in subs.values() {
         cancel.notify_one();
     }
     drop(subs);
     drop(tx);
     let _ = writer.await;
-    let _ = client.cancel().await;
 }
 
 /// One CEP-41 `subscribe` call, pumping NIP-01 frame chunks into the channel
@@ -130,12 +132,10 @@ async fn subscribe_loop(
     tx: mpsc::Sender<Message>,
     cancel: Arc<Notify>,
 ) {
-    let params = CallToolRequestParams::new("subscribe").with_arguments(transport::args(
-        serde_json::json!({
-            "subscription_id": sub_id,
-            "filters": filters,
-        }),
-    ));
+    let params = CallToolRequestParams::new("subscribe").with_arguments(args(serde_json::json!({
+        "subscription_id": sub_id,
+        "filters": filters,
+    })));
     // Establish the stream, bailing out if a CLOSE/disconnect beats setup (there
     // is nothing to cancel yet — the connect is simply dropped).
     let mut call = tokio::select! {
@@ -193,7 +193,7 @@ async fn publish_once(peer: Peer<RoleClient>, event: Value, tx: mpsc::Sender<Mes
         .unwrap_or("")
         .to_owned();
     let params = CallToolRequestParams::new("publish_event")
-        .with_arguments(transport::args(serde_json::json!({ "event": event })));
+        .with_arguments(args(serde_json::json!({ "event": event })));
     let frame = match peer.call_tool(params).await {
         Ok(r) => {
             let sc = r.structured_content.unwrap_or(Value::Null);

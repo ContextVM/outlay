@@ -24,7 +24,7 @@ use std::time::Duration;
 use contextvm_sdk::relay::mock::MockRelayPool;
 use contextvm_sdk::transport::open_stream::OpenStreamConfig;
 use contextvm_sdk::transport::server::{NostrServerTransport, NostrServerTransportConfig};
-use contextvm_sdk::{EncryptionMode, RelayPoolTrait};
+use contextvm_sdk::{EncryptionMode, GiftWrapMode, RelayPoolTrait};
 use futures::{SinkExt, StreamExt};
 use outlay::handler::OutlayServer;
 use outlay::proxy::Proxy;
@@ -85,10 +85,12 @@ async fn fixture() -> Fixture {
         private_key: None,
         encryption_mode: EncryptionMode::Disabled,
         connect_timeout: Duration::from_secs(15),
+        gift_wrap_mode: GiftWrapMode::Ephemeral,
+        max_cached_outlays: 64,
         max_ws_message_bytes: 1 << 20,
         test_relay_pool: Some(Arc::new(shim_pool) as Arc<dyn RelayPoolTrait>),
     };
-    let app = server::router(server::AppState { config: cfg });
+    let app = server::router(server::AppState::new(cfg));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind shim");
