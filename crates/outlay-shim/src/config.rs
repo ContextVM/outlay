@@ -40,6 +40,15 @@ pub struct ShimConfig {
     /// outlays that don't are unaffected. Zero idle cost — the relay is
     /// memoryless and event-driven.
     pub enable_relay: bool,
+    /// Public URL(s) this shim is reachable at (e.g. `wss://nostr.wtf`). When
+    /// the colocated relay is enabled, the bridge rewrites any relay URL it
+    /// would dial — from an nprofile hint or the configured fallback — that
+    /// matches one of these to the relay's loopback address, so it reaches the
+    /// in-process relay directly instead of hairpin-dialing its own public URL
+    /// (which times out on most deployments). Empty by default, in which case
+    /// the configured `relay_urls` are treated as the shim's own — the common
+    /// collapse case, so the default deployment needs no extra config.
+    pub public_urls: Vec<String>,
     /// Test-only: an injected mock CVM relay pool (replaces the real transport,
     /// giving a network-free shim↔outlay hop). Mirrors outlay's `test-utils`.
     #[cfg(feature = "test-utils")]
@@ -135,6 +144,17 @@ pub fn read_shim_config(env: &HashMap<String, String>) -> Result<ShimConfig, Con
 
     let enable_relay = opt_bool_env(env, "OUTLAY_SHIM_RELAY")?.unwrap_or(true);
 
+    // The loopback-shortcut allowlist. Empty/unset => the transport infers the
+    // shim's own URLs from `relay_urls` (the default collapse deployment).
+    let public_urls = match opt_string(env, "OUTLAY_SHIM_PUBLIC_URLS") {
+        Some(raw) => raw
+            .split(',')
+            .map(|s| s.trim().to_owned())
+            .filter(|s| !s.is_empty())
+            .collect(),
+        None => Vec::new(),
+    };
+
     Ok(ShimConfig {
         listen_addr,
         relay_urls,
@@ -145,6 +165,7 @@ pub fn read_shim_config(env: &HashMap<String, String>) -> Result<ShimConfig, Con
         max_cached_outlays,
         max_ws_message_bytes,
         enable_relay,
+        public_urls,
         #[cfg(feature = "test-utils")]
         test_relay_pool: None,
     })
@@ -182,6 +203,7 @@ mod tests {
         assert_eq!(c.gift_wrap_mode, GiftWrapMode::Ephemeral);
         assert_eq!(c.max_cached_outlays, 64);
         assert!(c.enable_relay, "relay endpoint defaults to on");
+        assert!(c.public_urls.is_empty(), "public_urls defaults to empty");
     }
 
     #[test]
@@ -195,6 +217,10 @@ mod tests {
             ("OUTLAY_SHIM_GIFT_WRAP_MODE", "optional"),
             ("OUTLAY_SHIM_MAX_CACHED_OUTLAYS", "8"),
             ("OUTLAY_SHIM_RELAY", "false"),
+            (
+                "OUTLAY_SHIM_PUBLIC_URLS",
+                "wss://nostr.wtf, wss://x.example",
+            ),
         ]))
         .unwrap();
         assert_eq!(c.listen_addr, "127.0.0.1:9100");
@@ -207,6 +233,11 @@ mod tests {
         assert!(
             !c.enable_relay,
             "OUTLAY_SHIM_RELAY=false disables the relay"
+        );
+        assert_eq!(
+            c.public_urls,
+            vec!["wss://nostr.wtf", "wss://x.example"],
+            "OUTLAY_SHIM_PUBLIC_URLS parses comma-separated"
         );
     }
 

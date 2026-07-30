@@ -351,6 +351,37 @@ endpoint; lean on the reverse proxy for TLS / per-IP rate-limiting / connection
  caps (the relay itself inherits `LocalRelay`'s per-connection REQ limits, sub-id
 length cap, filter-limit cap, and id verification). Authz remains deferred (§9.7).
 
+### 12.1 Bridge loopback shortcut (the hairpin fix)
+
+Collapsing the transport relay into the shim creates a trap: the bridge's CVM
+client transport reaches an outlay by dialing a CVM relay, and the outlay's
+relay — per the collapse — is the shim's **own public URL** (`wss://nostr.wtf`).
+So the shim host opens an outbound TLS connection to its own public address,
+which has to hairpin through its reverse proxy / NAT. On most deployments that
+self-connection never completes (the SYN goes unanswered) and the transport's
+`connect_timeout` fires — the 0.3.0 regression: `nak` against the `/` relay works
+(external → server), but `/<outlay-pubkey>` times out (server → its own public
+URL). Local dev never saw it because `127.0.0.1` loopback always succeeds.
+
+The fix: when the colocated relay is on, the bridge never dials a public URL
+that is its own — it swaps in the relay's loopback address instead.
+`transport::resolve_relay_urls` builds the candidate URL list (nprofile hints if
+present, else `OUTLAY_SHIM_RELAY_URLS`) and rewrites any candidate matching one
+of the shim's own public URLs to the loopback relay. Comparison is normalized
+through `RelayUrl` (trailing-slash- and default-port-tolerant). Candidates that
+are genuine third-party relays pass through untouched, so nprofile hints to
+other relays keep working.
+
+The allowlist is `OUTLAY_SHIM_PUBLIC_URLS`; when unset it defaults to
+`OUTLAY_SHIM_RELAY_URLS`, so the common deployment (transport relay == shim's
+public face) works with no extra config. The shortcut is inactive when the
+colocated relay is off — then there is nothing to loop back to and candidates
+are dialed verbatim.
+
+Relay selection is now fully the shim's: it always supplies explicit `relay_urls`
+(stage 1 of the SDK's CEP-17 resolution, which overrides nprofile hints), and
+passes the hex pubkey to `with_server_pubkey`.
+
 ## 11. Locked decisions
 
 1. **Repo:** Cargo workspace, `crates/outlay` + `crates/outlay-shim`. No shared
@@ -376,5 +407,13 @@ length cap, filter-limit cap, and id verification). Authz remains deferred (§9.
     `outlay-relay` with a `MemorylessDatabase`), served at `/` by a verbatim
     axum WS frame-pipe. On by default (`OUTLAY_SHIM_RELAY=false` disables).
     Accepts all kinds; stores nothing. Outlays opt in via nprofile relay hints.
-12. **Out of PoC:** authz, NIP-42, transport pooling, NIP-11 cache, TLS/public
-    bind, rate-limiting, metrics, bridge loopback self-shortcut to the `/` relay.
+12. **Bridge loopback shortcut (§12.1):** when the colocated relay is enabled,
+    the bridge's CVM transport rewrites any of the shim's own public URLs
+    (`OUTLAY_SHIM_PUBLIC_URLS`, defaulting to `OUTLAY_SHIM_RELAY_URLS`) in its
+    relay-URL candidates — nprofile hints or the configured fallback — to the
+    relay's loopback address, so it never hairpin-dials its public URL. Explicit
+    `relay_urls` is always supplied (stage 1 of CEP-17 resolution), so the shim
+    owns relay selection; third-party hints are dialed as-is. Without this the
+    collapse times out (0.3.0 regression).
+13. **Out of PoC:** authz, NIP-42, transport pooling, NIP-11 cache, TLS/public
+    bind, rate-limiting, metrics.

@@ -89,6 +89,7 @@ async fn fixture() -> Fixture {
         max_cached_outlays: 64,
         max_ws_message_bytes: 1 << 20,
         enable_relay: false,
+        public_urls: vec![],
         test_relay_pool: Some(Arc::new(shim_pool) as Arc<dyn RelayPoolTrait>),
     };
     let app = server::router(server::AppState::new(cfg, None));

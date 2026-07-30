@@ -60,6 +60,7 @@ async fn root_relay_endpoint_serves_memoryless_nip01() -> anyhow::Result<()> {
         max_cached_outlays: 4,
         max_ws_message_bytes: 1 << 20,
         enable_relay: true,
+        public_urls: vec![],
         #[cfg(feature = "test-utils")]
         test_relay_pool: None,
     };

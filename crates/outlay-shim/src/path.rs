@@ -1,11 +1,12 @@
 //! `/<pubkey>` path parsing: validate a path segment as a server-pubkey
 //! reference (hex / npub / nprofile) and detect relay hints.
 //!
-//! The raw string is returned verbatim — `NostrClientTransportConfig::
-//! with_server_pubkey` accepts hex / npub / nprofile and runs relay resolution
-//! itself. We only parse enough to (a) reject garbage early with a clean error,
-//! and (b) decide whether to leave `relay_urls` empty (nprofile hints win) or
-//! fill it from `OUTLAY_SHIM_RELAY_URLS` (design/shim.md §3, §6).
+//! The transport (`transport::build_client`) passes `hex` to
+//! `with_server_pubkey` and supplies relay URLs itself — from the nprofile
+//! hints when present, else `OUTLAY_SHIM_RELAY_URLS`. So here we only parse
+//! enough to (a) reject garbage early with a clean error, and (b) surface the
+//! nprofile's relay hints for the transport to rewrite/dial (design/shim.md
+//! §3, §6).
 //!
 //! `hex` is the canonical lowercase pubkey — the transport cache keys on it so
 //! hex / npub / nprofile (with differing relay hints) of the same identity
@@ -16,12 +17,15 @@ use nostr_sdk::{FromBech32, PublicKey};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParsedPath {
-    /// The exact string to pass to `with_server_pubkey`.
-    pub raw: String,
-    /// Lowercase hex pubkey — canonical identity for the transport cache.
+    /// Lowercase hex pubkey — canonical identity for the transport cache, and
+    /// the value passed to `with_server_pubkey`. The shim owns relay resolution
+    /// (`transport::build_client`), so the nprofile's embedded hints are not
+    /// handed to the SDK — they live in `relay_hints` below.
     pub hex: String,
-    /// True only for an nprofile carrying ≥1 relay hint.
-    pub has_relay_hints: bool,
+    /// Relay hints from an nprofile, normalized (no trailing slash). Empty for
+    /// hex / npub. The transport rewrites any that point at the shim's own
+    /// public URL to the colocated loopback relay; the rest are dialed as-is.
+    pub relay_hints: Vec<String>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -44,22 +48,25 @@ pub fn parse_path(raw: &str) -> Result<ParsedPath, PathError> {
     if looks_hex {
         let pk = PublicKey::from_hex(s).map_err(|e| PathError::Invalid(e.to_string()))?;
         return Ok(ParsedPath {
-            raw: s.to_owned(),
             hex: pk.to_hex(),
-            has_relay_hints: false,
+            relay_hints: Vec::new(),
         });
     }
     // npub / nprofile (or some other bech32 entity we reject).
     match Nip19::from_bech32(s) {
         Ok(Nip19::Pubkey(pk)) => Ok(ParsedPath {
-            raw: s.to_owned(),
             hex: pk.to_hex(),
-            has_relay_hints: false,
+            relay_hints: Vec::new(),
         }),
         Ok(Nip19::Profile(p)) => Ok(ParsedPath {
-            raw: s.to_owned(),
             hex: p.public_key.to_hex(),
-            has_relay_hints: !p.relays.is_empty(),
+            // Normalize via RelayUrl so hint comparison is trailing-slash- and
+            // default-port-tolerant (matches `transport::norm_url`).
+            relay_hints: p
+                .relays
+                .iter()
+                .map(|r| r.as_str_without_trailing_slash().to_owned())
+                .collect(),
         }),
         Ok(_) => Err(PathError::NotAPubkey),
         Err(e) => Err(PathError::Invalid(e.to_string())),
@@ -78,9 +85,8 @@ mod tests {
     fn hex_pubkey_accepted_no_hints() {
         let hex = Keys::generate().public_key().to_hex();
         let p = parse_path(&hex).unwrap();
-        assert_eq!(p.raw, hex);
         assert_eq!(p.hex, hex);
-        assert!(!p.has_relay_hints);
+        assert!(p.relay_hints.is_empty());
     }
 
     #[test]
@@ -89,11 +95,11 @@ mod tests {
         let npub = pk.to_bech32().expect("npub");
         let p = parse_path(&npub).unwrap();
         assert_eq!(p.hex, pk.to_hex());
-        assert!(!p.has_relay_hints);
+        assert!(p.relay_hints.is_empty());
     }
 
     #[test]
-    fn nprofile_with_hint_reports_hints() {
+    fn nprofile_with_hint_surfaces_normalized_hints() {
         let pk = Keys::generate().public_key();
         let profile = Nip19Profile::new(
             pk,
@@ -102,7 +108,8 @@ mod tests {
         let s = profile.to_bech32().expect("nprofile");
         let p = parse_path(&s).unwrap();
         assert_eq!(p.hex, pk.to_hex());
-        assert!(p.has_relay_hints, "nprofile with a relay hint => hints");
+        // Normalized: trailing slash stripped, ready to compare against self URLs.
+        assert_eq!(p.relay_hints, vec!["wss://relay.contextvm.org"]);
     }
 
     #[test]
@@ -112,7 +119,10 @@ mod tests {
         let s = profile.to_bech32().expect("nprofile");
         let p = parse_path(&s).unwrap();
         assert_eq!(p.hex, pk.to_hex());
-        assert!(!p.has_relay_hints, "nprofile with no relays => no hints");
+        assert!(
+            p.relay_hints.is_empty(),
+            "nprofile with no relays => no hints"
+        );
     }
 
     // The transport cache keys on `hex` so that hex / npub / nprofile encodings
@@ -157,6 +167,6 @@ mod tests {
     fn trims_whitespace() {
         let hex = Keys::generate().public_key().to_hex();
         let p = parse_path(&format!("  {hex}  ")).unwrap();
-        assert_eq!(p.raw, hex);
+        assert_eq!(p.hex, hex);
     }
 }

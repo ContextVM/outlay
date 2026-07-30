@@ -36,7 +36,7 @@ impl AppState {
             .expect("config floors max_cached_outlays to >= 1");
         Self {
             config,
-            transports: Arc::new(TransportCache::new(cap)),
+            transports: Arc::new(TransportCache::new(cap, relay_url.clone())),
             relay_url,
         }
     }

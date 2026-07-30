@@ -162,6 +162,7 @@ cargo run -p outlay-shim
 |--------------------------------|----------------------------|--------------------------------------------------------|
 | `OUTLAY_SHIM_LISTEN_ADDR`      | `127.0.0.1:8088`           | Address to listen on (the Docker image sets `0.0.0.0:8088`). |
 | `OUTLAY_SHIM_RELAY_URLS`       | `wss://nostr.wtf`          | Comma-separated CVM relays used to find outlay servers.|
+| `OUTLAY_SHIM_PUBLIC_URLS`      | _(unset → `RELAY_URLS`)_   | The shim's own public URL(s). When the colocated relay is on, the bridge dials any matching relay (from a hint or the fallback) over loopback instead of hairpin-dialing its public URL — which times out on most deploys. Defaults to `OUTLAY_SHIM_RELAY_URLS`. |
 | `OUTLAY_SHIM_PRIVATE_KEY`      | _(ephemeral)_              | Hex/nsec shim key.                                     |
 | `OUTLAY_SHIM_ENCRYPTION_MODE`  | `optional`                 | CVM transport encryption: `disabled` / `optional` / `required`. |
 
