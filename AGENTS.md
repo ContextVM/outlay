@@ -231,6 +231,17 @@ configs) + unit tests + the network-free bundled-relay E2E.
   the server on untrusted networks meanwhile.
 - **Single upstream only (v1).** Multi-relay fan-in makes EOSE semantics
   ambiguous; deferred.
+- **outlay-shim's loopback shortcut misfires in local dev.** When
+  `OUTLAY_SHIM_PUBLIC_URLS` is unset, the bridge infers the shim's own URL from
+  `OUTLAY_SHIM_CVM_RELAYS` (correct for the collapsed public deploy, where the
+  shim *is* its CVM relay) and rewrites any matching dial to the colocated
+  loopback relay. Locally that inference is wrong — the shim is `localhost`,
+  the CVM relay is the real `wss://nostr.wtf` — so the bridge loops back to its
+  own (empty) relay and the `/<pubkey>` page won't resolve. Run local dev with
+  `OUTLAY_SHIM_RELAY=false` (no colocated relay → no shortcut → dials the real
+  relay), or set `OUTLAY_SHIM_PUBLIC_URLS=http://localhost:<port>` to keep the
+  relay on. The inference can't simply be dropped: the collapsed deploy would
+  then have to declare its public URL explicitly (`design/shim.md` §12.1).
 
 ## PR guidelines
 

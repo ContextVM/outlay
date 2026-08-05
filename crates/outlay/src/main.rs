@@ -158,12 +158,22 @@ fn print_banner(server_pubkey: &str, cfg: &ServerConfig, upstream_url: &str) {
         .map(|r| format!("     • {r}"))
         .collect::<Vec<_>>()
         .join("\n");
+    // The shim's page for this outlay: first CVM relay (== the shim's public
+    // host in the collapsed deploy), scheme-swapped to https, + this server's
+    // pubkey. `None` only if no CVM relay is configured (never, given defaults).
+    let page_url = cfg
+        .cvm_relay_urls
+        .first()
+        .map(|r| format!("{}/{}", https_url(r), server_pubkey));
     println!();
     println!("  {rule}");
     println!("   outlay — Nostr relay over ContextVM");
     println!("  {rule}");
     println!();
     println!("   server pubkey   {server_pubkey}");
+    if let Some(page) = page_url.as_deref() {
+        println!("   page            {page}");
+    }
     println!();
     println!("   CVM relays (listening)");
     println!("{cvm_lines}");
@@ -171,4 +181,32 @@ fn print_banner(server_pubkey: &str, cfg: &ServerConfig, upstream_url: &str) {
     println!("   upstream relay (proxied)");
     println!("     • {upstream_url}");
     println!();
+}
+
+/// Swap a WebSocket scheme to its HTTP/HTTPS equivalent for display — the CVM
+/// relay and its shim page are served on the same host behind a reverse proxy.
+/// Leaves `http(s)://` as-is; defaults to `https://`.
+fn https_url(url: &str) -> String {
+    if let Some(rest) = url.strip_prefix("wss://") {
+        format!("https://{rest}")
+    } else if let Some(rest) = url.strip_prefix("ws://") {
+        format!("http://{rest}")
+    } else if url.starts_with("https://") || url.starts_with("http://") {
+        url.to_owned()
+    } else {
+        format!("https://{url}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::https_url;
+
+    #[test]
+    fn https_url_swaps_ws_schemes() {
+        assert_eq!(https_url("wss://nostr.wtf"), "https://nostr.wtf");
+        assert_eq!(https_url("ws://127.0.0.1:8086"), "http://127.0.0.1:8086");
+        assert_eq!(https_url("https://nostr.wtf"), "https://nostr.wtf");
+        assert_eq!(https_url("nostr.wtf"), "https://nostr.wtf");
+    }
 }
