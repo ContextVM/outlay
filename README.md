@@ -165,7 +165,7 @@ cargo run -p outlay-shim
 | `OUTLAY_SHIM_LISTEN_ADDR`      | `127.0.0.1:8088`           | Address to listen on (the Docker image sets `0.0.0.0:8088`). |
 | `OUTLAY_SHIM_RELAY`            | `true`                     | Run the colocated memoryless NIP-01 relay at `/` (see below). |
 | `OUTLAY_SHIM_CVM_RELAYS`       | `wss://nostr.wtf`          | Comma-separated CVM transport relays used to find outlay servers. With the colocated relay on, this must be the shim's own public URL(s). |
-| `OUTLAY_SHIM_PUBLIC_URLS`      | _(unset → `CVM_RELAYS`)_   | URLs considered "this shim" for the loopback shortcut; defaults to `OUTLAY_SHIM_CVM_RELAYS`. |
+| `OUTLAY_SHIM_PUBLIC_URLS`      | _(unset → `CVM_RELAYS`)_   | Public URL(s) this shim is reachable at. Feeds the loopback shortcut, the CLI banner link, and the NIP-11 HTML "Open in Jumble" button. Defaults to `OUTLAY_SHIM_CVM_RELAYS`. |
 | `OUTLAY_SHIM_CONNECT_TIMEOUT`  | `15` (seconds)             | CVM transport handshake timeout.                       |
 | `OUTLAY_SHIM_PRIVATE_KEY`      | _(ephemeral)_              | Hex/nsec shim key.                                     |
 | `OUTLAY_SHIM_ENCRYPTION_MODE`  | `optional`                 | CVM transport encryption: `disabled` / `optional` / `required`. |

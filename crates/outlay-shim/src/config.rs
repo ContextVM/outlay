@@ -47,12 +47,29 @@ pub struct ShimConfig {
     /// in-process relay directly instead of hairpin-dialing its own public URL
     /// (which times out on most deployments). Empty by default, in which case
     /// the configured `relay_urls` are treated as the shim's own — the common
-    /// collapse case, so the default deployment needs no extra config.
+    /// collapse case, so the default deployment needs no extra config. The
+    /// first resolved URL is also the shim's canonical public face — shown in
+    /// the CLI banner and used to build the NIP-11 HTML "Open in Jumble" link.
     pub public_urls: Vec<String>,
     /// Test-only: an injected mock CVM relay pool (replaces the real transport,
     /// giving a network-free shim↔outlay hop). Mirrors outlay's `test-utils`.
     #[cfg(feature = "test-utils")]
     pub test_relay_pool: Option<std::sync::Arc<dyn contextvm_sdk::RelayPoolTrait>>,
+}
+
+impl ShimConfig {
+    /// The canonical public URL of this shim (e.g. `wss://nostr.wtf`): the
+    /// first of `public_urls`, or — when unset — the first of `relay_urls` (the
+    /// inferred self-URL in the default collapse deployment). The same "shim
+    /// public face" the loopback shortcut keys on; also feeds the CLI banner
+    /// link and the NIP-11 HTML "Open in Jumble" button. `None` only if both
+    /// lists are empty (never, given the defaults).
+    pub fn public_url(&self) -> Option<&str> {
+        self.public_urls
+            .first()
+            .or_else(|| self.relay_urls.first())
+            .map(String::as_str)
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -204,6 +221,20 @@ mod tests {
         assert_eq!(c.max_cached_outlays, 64);
         assert!(c.enable_relay, "relay endpoint defaults to on");
         assert!(c.public_urls.is_empty(), "public_urls defaults to empty");
+    }
+
+    #[test]
+    fn public_url_prefers_public_urls_then_relay_urls() {
+        let mut c = read_shim_config(&HashMap::new()).unwrap();
+        // Empty `public_urls` => inferred from `relay_urls` (default wss://nostr.wtf).
+        assert_eq!(c.public_url(), Some("wss://nostr.wtf"));
+        // Explicit `public_urls` wins.
+        c.public_urls = vec!["wss://shim.example".into()];
+        assert_eq!(c.public_url(), Some("wss://shim.example"));
+        // Neither set => None.
+        c.public_urls.clear();
+        c.relay_urls.clear();
+        assert_eq!(c.public_url(), None);
     }
 
     #[test]

@@ -18,6 +18,9 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     let listen = cfg.listen_addr.clone();
+    // Capture the public face before `cfg` moves into AppState. Shown in the
+    // banner as the https URL to open in a browser.
+    let public_page = cfg.public_url().map(https_url);
 
     // Colocated memoryless relay at `/`: lets outlays collapse their CVM
     // transport relay into the shim. Soft-fail: if it can't bind, the bridge
@@ -57,6 +60,9 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!(
         "outlay-shim listening on http://{listen} — vanilla NIP-01 clients connect at ws://{listen}/<server-pubkey>"
     );
+    if let Some(page) = public_page.as_deref() {
+        tracing::info!("public page: {page}  (open an outlay at {page}/<server-pubkey>)");
+    }
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await?;
@@ -88,5 +94,33 @@ async fn shutdown_signal() {
     #[cfg(not(unix))]
     {
         ctrl_c.await;
+    }
+}
+
+/// Swap a WebSocket scheme to its HTTP/HTTPS equivalent for display — the shim
+/// serves the same host over both behind a reverse proxy. Leaves `http(s)://`
+/// as-is; defaults to `https://` for anything else.
+fn https_url(url: &str) -> String {
+    if let Some(rest) = url.strip_prefix("wss://") {
+        format!("https://{rest}")
+    } else if let Some(rest) = url.strip_prefix("ws://") {
+        format!("http://{rest}")
+    } else if url.starts_with("https://") || url.starts_with("http://") {
+        url.to_owned()
+    } else {
+        format!("https://{url}")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::https_url;
+
+    #[test]
+    fn https_url_swaps_ws_schemes() {
+        assert_eq!(https_url("wss://nostr.wtf"), "https://nostr.wtf");
+        assert_eq!(https_url("ws://x:8080"), "http://x:8080");
+        assert_eq!(https_url("https://nostr.wtf"), "https://nostr.wtf");
+        assert_eq!(https_url("nostr.wtf"), "https://nostr.wtf");
     }
 }

@@ -17,7 +17,7 @@ const NIP11_JSON: &str = "application/nostr+json";
 
 /// `GET /` — synthesized shim-level doc (JSON or HTML by Accept).
 pub async fn serve_root(headers: &HeaderMap) -> Response {
-    render(&synth_root(), headers)
+    render(&synth_root(), headers, None)
 }
 
 /// `GET /<pubkey>` — the server's real NIP-11, fetched via outlay's `relay_info`.
@@ -35,7 +35,10 @@ pub async fn serve_pubkey(
         Ok(d) => d,
         Err(e) => return plain(StatusCode::BAD_GATEWAY, &e.to_string()),
     };
-    render(&doc, headers)
+    // "Open in Jumble" target: the shim's public relay URL + this server's hex
+    // pubkey, i.e. `wss://<host>/<hex>` — the bridge path a vanilla client dials.
+    let jumble = cfg.public_url().map(|u| format!("{u}/{}", parsed.hex));
+    render(&doc, headers, jumble.as_deref())
 }
 
 async fn fetch_nip11(
@@ -66,7 +69,7 @@ fn synth_root() -> Value {
 }
 
 /// Content-negotiate one doc into a JSON (+CORS) or HTML response.
-fn render(doc: &Value, headers: &HeaderMap) -> Response {
+fn render(doc: &Value, headers: &HeaderMap, jumble: Option<&str>) -> Response {
     let wants_json = headers
         .get(header::ACCEPT)
         .and_then(|v| v.to_str().ok())
@@ -84,7 +87,7 @@ fn render(doc: &Value, headers: &HeaderMap) -> Response {
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
-        .body(Body::from(render_html(doc)))
+        .body(Body::from(render_html(doc, jumble)))
         .unwrap()
 }
 
@@ -96,22 +99,33 @@ fn plain(status: StatusCode, msg: &str) -> Response {
         .unwrap()
 }
 
-fn render_html(doc: &Value) -> String {
+fn render_html(doc: &Value, jumble: Option<&str>) -> String {
     let name = doc
         .get("name")
         .and_then(Value::as_str)
         .unwrap_or("Nostr relay");
     let pretty = serde_json::to_string_pretty(doc).unwrap_or_else(|_| "{}".into());
+    let jumble_btn = match jumble {
+        Some(relay) => format!(
+            "<p><a class=\"btn\" href=\"https://jumble.social/?r={relay}\" \
+target=\"_blank\" rel=\"noopener noreferrer\">Open feed in Jumble ↗</a></p>",
+            relay = esc(relay)
+        ),
+        None => String::new(),
+    };
     format!(
         "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\"><title>{title}</title>\
 <style>body{{font-family:system-ui,sans-serif;max-width:46rem;margin:2rem auto;padding:0 1rem}}\
+.btn{{display:inline-block;padding:.5rem 1rem;background:#6c4efc;color:#fff;text-decoration:none;border-radius:.5rem}}\
 pre{{background:#f5f5f5;padding:1rem;overflow:auto;border-radius:.5rem}}</style></head>\
 <body><h1>{name}</h1>\
 <p>outlay-shim bridge. Nostr clients: request this URL with \
 <code>Accept: application/nostr+json</code> for the NIP-11 document.</p>\
+{jumble_btn}\
 <pre>{doc}</pre></body></html>",
         title = esc(name),
         name = esc(name),
+        jumble_btn = jumble_btn,
         doc = esc(&pretty),
     )
 }
@@ -120,4 +134,5 @@ fn esc(s: &str) -> String {
     s.replace('&', "&amp;")
         .replace('<', "&lt;")
         .replace('>', "&gt;")
+        .replace('"', "&quot;")
 }
