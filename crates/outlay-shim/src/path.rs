@@ -3,7 +3,7 @@
 //!
 //! The transport (`transport::build_client`) passes `hex` to
 //! `with_server_pubkey` and supplies relay URLs itself — from the nprofile
-//! hints when present, else `OUTLAY_SHIM_RELAY_URLS`. So here we only parse
+//! hints when present, else `OUTLAY_SHIM_CVM_RELAYS`. So here we only parse
 //! enough to (a) reject garbage early with a clean error, and (b) surface the
 //! nprofile's relay hints for the transport to rewrite/dial (design/shim.md
 //! §3, §6).

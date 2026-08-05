@@ -30,6 +30,11 @@ async fn main() -> anyhow::Result<()> {
                     relay_url = %h.url(),
                     "memoryless relay endpoint enabled at / (outlays may use it as their CVM transport relay)"
                 );
+                tracing::info!(
+                    "bridge loopback shortcut active: relay URLs matching this shim are dialed over loopback. \
+                     With the relay on, OUTLAY_SHIM_CVM_RELAYS must be this shim's own public URL; \
+                     set OUTLAY_SHIM_RELAY=false to use a third-party transport relay"
+                );
                 Some(h)
             }
             Err(e) => {

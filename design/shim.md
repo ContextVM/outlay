@@ -30,7 +30,7 @@ a storage-less `LocalRelay` (reused from `outlay-relay`, backed by a
 retains nothing. This is outlay's **default CVM transport relay**
 (`wss://nostr.wtf`, where the shim is hosted), collapsing the transport relay
 into the shim and removing one network hop. An outlay opts *out* by setting
-`OUTLAY_RELAY_URLS` to a third-party relay (e.g. `wss://relay.contextvm.org`);
+`OUTLAY_CVM_RELAYS` to a third-party relay (e.g. `wss://relay.contextvm.org`);
 the bridge follows each outlay's nprofile relay hint (§3), so mixed deployments
 coexist. The relay is event-driven and zero-cost when idle, defaulting on
 (`OUTLAY_SHIM_RELAY=false` to disable).
@@ -83,7 +83,7 @@ user). Three accepted encodings, parsed with `nostr`'s NIP-19 helpers:
 
 **Relay selection:** if the address is an `nprofile` with relay hints, those
 hints are the CVM relays used to reach the server. Otherwise fall back to
-`OUTLAY_SHIM_RELAY_URLS` (default `wss://nostr.wtf`). Hints win over
+`OUTLAY_SHIM_CVM_RELAYS` (default `wss://nostr.wtf`). Hints win over
 env; env wins over the default.
 
 Invalid path segment → HTTP `400` (HTTP) or WS-close-with-`NOTICE` (WS).
@@ -235,7 +235,7 @@ Loaded from `.env` then `.env.local` (first-write-wins), then the process env.
 | Variable                       | Default                    | Notes |
 |--------------------------------|----------------------------|-------|
 | `OUTLAY_SHIM_LISTEN_ADDR`      | `127.0.0.1:8088`           | Local bind. Localhost-only by design (§9.7). |
-| `OUTLAY_SHIM_RELAY_URLS`       | `wss://nostr.wtf`          | CVM relays (comma-sep). Overridden by nprofile hints.   |
+| `OUTLAY_SHIM_CVM_RELAYS`       | `wss://nostr.wtf`          | CVM relays (comma-sep). Overridden by nprofile hints.   |
 | `OUTLAY_SHIM_PRIVATE_KEY`      | _(ephemeral)_              | hex/nsec client key. New key each run if unset. |
 | `OUTLAY_SHIM_ENCRYPTION_MODE`  | `optional`                 | `optional`/`disabled`/`required`. Must be compatible with the server. |
 | `OUTLAY_SHIM_CONNECT_TIMEOUT`  | `15` (seconds)             | CVM transport handshake timeout. |
@@ -279,6 +279,14 @@ Ranked by severity.
 8. **The shim is a CVM client with its own identity.** It needs a keypair
    (ephemeral or configured). Authz is deferred, so the key gates nothing yet —
    but it exists and is part of the config surface.
+9. **Loopback-shortcut config rule (§12.1).** With the colocated relay on,
+   `OUTLAY_SHIM_CVM_RELAYS` is treated as the shim's own public URL (the
+   shortcut's default allowlist when `OUTLAY_SHIM_PUBLIC_URLS` is unset). It
+   must therefore be the shim's own URL; to carry the transport over a
+   third-party relay instead, disable the colocated relay
+   (`OUTLAY_SHIM_RELAY=false`), which also turns the shortcut off — running it
+   on while pointing `OUTLAY_SHIM_CVM_RELAYS` at a third-party relay silently
+   breaks (the bridge loops back to a relay the outlay isn't on).
 
 ## 10. Roadmap
 
@@ -322,7 +330,7 @@ third-party relay for the transport:
 
 **Addressing-driven.** The bridge follows each outlay's nprofile relay hint
 (§3), so it reaches that outlay on the shim's relay automatically. An outlay
-opts *out* of the collapse by setting `OUTLAY_RELAY_URLS` to a third-party relay
+opts *out* of the collapse by setting `OUTLAY_CVM_RELAYS` to a third-party relay
 (and advertising it as its hint); mixed deployments coexist on one shim.
 
 **Reuse, not reinvention.** The relay is `outlay-relay`'s `LocalRelay`
@@ -366,17 +374,21 @@ URL). Local dev never saw it because `127.0.0.1` loopback always succeeds.
 The fix: when the colocated relay is on, the bridge never dials a public URL
 that is its own — it swaps in the relay's loopback address instead.
 `transport::resolve_relay_urls` builds the candidate URL list (nprofile hints if
-present, else `OUTLAY_SHIM_RELAY_URLS`) and rewrites any candidate matching one
+present, else `OUTLAY_SHIM_CVM_RELAYS`) and rewrites any candidate matching one
 of the shim's own public URLs to the loopback relay. Comparison is normalized
 through `RelayUrl` (trailing-slash- and default-port-tolerant). Candidates that
 are genuine third-party relays pass through untouched, so nprofile hints to
 other relays keep working.
 
 The allowlist is `OUTLAY_SHIM_PUBLIC_URLS`; when unset it defaults to
-`OUTLAY_SHIM_RELAY_URLS`, so the common deployment (transport relay == shim's
-public face) works with no extra config. The shortcut is inactive when the
-colocated relay is off — then there is nothing to loop back to and candidates
-are dialed verbatim.
+`OUTLAY_SHIM_CVM_RELAYS`, so the common deployment (transport relay == shim's
+public face) works with no extra config. **Config rule:** with the relay on,
+`OUTLAY_SHIM_CVM_RELAYS` must be the shim's own public URL; to use a third-party
+transport relay, disable the colocated relay (`OUTLAY_SHIM_RELAY=false`), which
+also turns the shortcut off — on + third-party `CVM_RELAYS` silently breaks
+(the bridge loops back to a relay the outlay isn't on). The shortcut is inactive
+when the colocated relay is off — then there is nothing to loop back to and
+candidates are dialed verbatim.
 
 Relay selection is now fully the shim's: it always supplies explicit `relay_urls`
 (stage 1 of the SDK's CEP-17 resolution, which overrides nprofile hints), and
@@ -388,7 +400,7 @@ passes the hex pubkey to `with_server_pubkey`.
    core crate. The shim does **not** depend on `outlay`.
 2. **Addressing:** path-keyed, `ws://host:port/<server-pubkey>`. Multiplexer.
 3. **Path pubkey:** hex / npub / nprofile; nprofile relay hints override
-   `OUTLAY_SHIM_RELAY_URLS` (default `wss://nostr.wtf`).
+   `OUTLAY_SHIM_CVM_RELAYS` (default `wss://nostr.wtf`).
 4. **NIP-11:** content-negotiated — `Accept: application/nostr+json` → JSON from
    outlay `relay_info` (+CORS); else → HTML. Both at `/<pubkey>`. Synthesized
    shim doc at `/`.
@@ -409,7 +421,7 @@ passes the hex pubkey to `with_server_pubkey`.
     Accepts all kinds; stores nothing. Outlays opt in via nprofile relay hints.
 12. **Bridge loopback shortcut (§12.1):** when the colocated relay is enabled,
     the bridge's CVM transport rewrites any of the shim's own public URLs
-    (`OUTLAY_SHIM_PUBLIC_URLS`, defaulting to `OUTLAY_SHIM_RELAY_URLS`) in its
+    (`OUTLAY_SHIM_PUBLIC_URLS`, defaulting to `OUTLAY_SHIM_CVM_RELAYS`) in its
     relay-URL candidates — nprofile hints or the configured fallback — to the
     relay's loopback address, so it never hairpin-dials its public URL. Explicit
     `relay_urls` is always supplied (stage 1 of CEP-17 resolution), so the shim

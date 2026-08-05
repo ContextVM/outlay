@@ -4,7 +4,7 @@
 //! at startup and serves it at `/` by piping each upgraded WS connection verbatim
 //! to it. This lets outlays collapse their CVM transport relay into the shim
 //! (one fewer network hop) by advertising the shim's public URL as their relay
-//! hint; outlays that override `OUTLAY_RELAY_URLS` to a third-party relay are
+//! hint; outlays that override `OUTLAY_CVM_RELAYS` to a third-party relay are
 //! unaffected.
 //!
 //! `LocalRelay` owns every NIP-01 semantic (REQ/EVENT/CLOSE/EOSE/OK/NOTICE,

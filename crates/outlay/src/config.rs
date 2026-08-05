@@ -107,7 +107,7 @@ pub fn read_server_config(
         return Err(ConfigError::MissingProxyRelayUrl);
     }
 
-    let cvm_relay_urls = match opt_string(env, "OUTLAY_RELAY_URLS") {
+    let cvm_relay_urls = match opt_string(env, "OUTLAY_CVM_RELAYS") {
         Some(raw) => {
             let urls: Vec<String> = raw
                 .split(',')
@@ -183,7 +183,7 @@ mod tests {
     fn overrides() {
         let c = read_server_config(&env(&[
             ("OUTLAY_PROXY_RELAY_URL", "wss://relay.nostr.net"),
-            ("OUTLAY_RELAY_URLS", "wss://a.test, wss://b.test"),
+            ("OUTLAY_CVM_RELAYS", "wss://a.test, wss://b.test"),
             ("OUTLAY_SERVER_NAME", "my-outlay"),
             ("OUTLAY_ANNOUNCED", "1"),
             ("OUTLAY_GIFT_WRAP_MODE", "persistent"),

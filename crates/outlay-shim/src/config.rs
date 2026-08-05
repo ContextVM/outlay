@@ -92,7 +92,7 @@ pub fn read_shim_config(env: &HashMap<String, String>) -> Result<ShimConfig, Con
     let listen_addr =
         opt_string(env, "OUTLAY_SHIM_LISTEN_ADDR").unwrap_or_else(|| "127.0.0.1:8088".into());
 
-    let relay_urls = match opt_string(env, "OUTLAY_SHIM_RELAY_URLS") {
+    let relay_urls = match opt_string(env, "OUTLAY_SHIM_CVM_RELAYS") {
         Some(raw) => {
             let urls: Vec<String> = raw
                 .split(',')
@@ -210,7 +210,7 @@ mod tests {
     fn overrides() {
         let c = read_shim_config(&env(&[
             ("OUTLAY_SHIM_LISTEN_ADDR", "127.0.0.1:9100"),
-            ("OUTLAY_SHIM_RELAY_URLS", "wss://a.test, wss://b.test"),
+            ("OUTLAY_SHIM_CVM_RELAYS", "wss://a.test, wss://b.test"),
             ("OUTLAY_SHIM_ENCRYPTION_MODE", "disabled"),
             ("OUTLAY_SHIM_CONNECT_TIMEOUT", "30"),
             ("OUTLAY_SHIM_PRIVATE_KEY", "nsec1..."),

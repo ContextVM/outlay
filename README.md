@@ -124,7 +124,7 @@ process environment.
 | Variable                      | Default                    | Description                                            |
 |-------------------------------|----------------------------|--------------------------------------------------------|
 | `OUTLAY_PROXY_RELAY_URL`      | _(unset → bundled)_        | External upstream to proxy. Unset = run the bundled relay (default). |
-| `OUTLAY_RELAY_URLS`           | `wss://nostr.wtf`          | Comma-separated CVM relays the server listens on.      |
+| `OUTLAY_CVM_RELAYS`           | `wss://nostr.wtf`          | Comma-separated CVM transport relays the server listens on (distinct from `OUTLAY_PROXY_RELAY_URL`, the upstream being proxied). |
 | `OUTLAY_SERVER_PRIVATE_KEY`   | _(ephemeral)_              | Hex/nsec server key. Unset → new key each start.       |
 | `OUTLAY_SERVER_NAME`          | `outlay`                   | CVM profile name.                                      |
 | `OUTLAY_ANNOUNCED`            | `false`                    | Public discovery (kind 11316) on/off.                  |
@@ -147,12 +147,14 @@ process environment.
 
 ## outlay-shim — vanilla NIP-01 bridge
 
-`outlay-shim` is a localhost WebSocket endpoint that translates vanilla NIP-01
+`outlay-shim` is a WebSocket/HTTP endpoint that translates vanilla NIP-01
 (`REQ`/`EVENT`/`CLOSE`) into outlay's CVM tool calls, so ordinary Nostr clients
-can reach CVM-exposed relays without speaking CVM. Path-keyed:
-`ws://localhost:8088/<server-pubkey-or-nprofile>` (hex, npub, or nprofile; an
-nprofile's relay hint overrides the configured CVM relays). Design in
-[`design/shim.md`](./design/shim.md).
+can reach CVM-exposed relays without speaking CVM. It also hosts a colocated
+memoryless NIP-01 relay at `/` (on by default) that outlays can use as their
+CVM transport relay — see *Colocated relay at `/`* below. The bridge is
+path-keyed: `ws://<host>:<port>/<server-pubkey-or-nprofile>` (hex, npub, or
+nprofile; an nprofile's relay hint overrides the configured CVM relays). Design
+in [`design/shim.md`](./design/shim.md).
 
 ```sh
 cargo run -p outlay-shim
@@ -161,10 +163,41 @@ cargo run -p outlay-shim
 | Variable                       | Default                    | Description                                            |
 |--------------------------------|----------------------------|--------------------------------------------------------|
 | `OUTLAY_SHIM_LISTEN_ADDR`      | `127.0.0.1:8088`           | Address to listen on (the Docker image sets `0.0.0.0:8088`). |
-| `OUTLAY_SHIM_RELAY_URLS`       | `wss://nostr.wtf`          | Comma-separated CVM relays used to find outlay servers.|
-| `OUTLAY_SHIM_PUBLIC_URLS`      | _(unset → `RELAY_URLS`)_   | The shim's own public URL(s). When the colocated relay is on, the bridge dials any matching relay (from a hint or the fallback) over loopback instead of hairpin-dialing its public URL — which times out on most deploys. Defaults to `OUTLAY_SHIM_RELAY_URLS`. |
+| `OUTLAY_SHIM_RELAY`            | `true`                     | Run the colocated memoryless NIP-01 relay at `/` (see below). |
+| `OUTLAY_SHIM_CVM_RELAYS`       | `wss://nostr.wtf`          | Comma-separated CVM transport relays used to find outlay servers. With the colocated relay on, this must be the shim's own public URL(s). |
+| `OUTLAY_SHIM_PUBLIC_URLS`      | _(unset → `CVM_RELAYS`)_   | URLs considered "this shim" for the loopback shortcut; defaults to `OUTLAY_SHIM_CVM_RELAYS`. |
+| `OUTLAY_SHIM_CONNECT_TIMEOUT`  | `15` (seconds)             | CVM transport handshake timeout.                       |
 | `OUTLAY_SHIM_PRIVATE_KEY`      | _(ephemeral)_              | Hex/nsec shim key.                                     |
 | `OUTLAY_SHIM_ENCRYPTION_MODE`  | `optional`                 | CVM transport encryption: `disabled` / `optional` / `required`. |
+| `OUTLAY_SHIM_GIFT_WRAP_MODE`   | `ephemeral`                | Outbound gift-wrap kind: `ephemeral` (21059) / `persistent` (1059) / `optional`. |
+| `OUTLAY_SHIM_MAX_CACHED_OUTLAYS` | `64`                     | Max distinct outlay identities cached (each holds one CVM transport). |
+| `OUTLAY_SHIM_MAX_WS_MESSAGE_BYTES` | `1048576` (1 MiB)      | WS frame/message size limit.                           |
+
+### Colocated relay at `/` (the "collapse")
+
+By default the shim also serves a memoryless (storage-less) NIP-01 relay at `/`
+(`OUTLAY_SHIM_RELAY=false` disables it). An outlay can point its CVM transport
+at the shim's own public URL (`OUTLAY_CVM_RELAYS=wss://<shim-host>`),
+collapsing the transport relay into the shim — one fewer hop and no third-party
+dependency. Vanilla clients keep connecting at `/<server-pubkey>`; `/` is the
+relay.
+
+**Loopback shortcut.** When the colocated relay is on, the bridge never dials
+the shim's own public URL to reach an outlay — that hairpins through the reverse
+proxy and times out on most deploys. Instead it rewrites any matching relay URL
+(from an nprofile hint or the configured fallback) to the relay's loopback
+address. The match set is `OUTLAY_SHIM_PUBLIC_URLS`, defaulting to
+`OUTLAY_SHIM_CVM_RELAYS` when unset, so the standard deployment needs no extra
+config. Third-party relays pass through untouched, so nprofile hints to other
+relays keep working.
+
+**Config rule.** With the colocated relay **on**, `OUTLAY_SHIM_CVM_RELAYS`
+*must* be this shim's own public URL — the default above treats it as "self".
+To use a **third-party** transport relay instead, set `OUTLAY_SHIM_RELAY=false`
+(which also disables the shortcut); then `OUTLAY_SHIM_CVM_RELAYS` may point
+anywhere. Running the colocated relay on *while* pointing `CVM_RELAYS` at a
+third-party relay silently breaks (the bridge loops back to a relay the outlay
+isn't on).
 
 ## Testing
 
